@@ -1,0 +1,223 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{fancyhdr}
+\usepackage[includehead, margin=2cm]{geometry}
+\usepackage{listings}
+\usepackage{titling}
+\usepackage{parskip}
+\usepackage{fancyvrb}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{hyperref}
+
+\usepackage{xcolor}
+\lstset{basicstyle=\ttfamily,
+  showstringspaces=false,
+  commentstyle=\color{red},
+  keywordstyle=\color{blue}
+}
+
+\hypersetup{
+    colorlinks=true,
+    urlcolor=blue
+}
+
+\pagestyle{fancy}
+
+\newenvironment{centeredcode}
+{
+\ttfamily
+\begin{center}
+\begin{tabular}{l}
+}
+{
+\end{tabular}
+\end{center}
+}
+
+\title{CS 4240: Compilers and Interpreters, Project 2, Fall 2025\\
+\Large
+Assigned: September 17, 2025, 15\% of course grade\\
+(100 points total)\\
+Due in Gradescope by 11:59pm on October 22, 2025}\\
+
+\preauthor{}
+\postauthor{}
+\author{}
+\date{}
+
+\begin{document}
+\lhead{CS 4240, Fall 2025}
+\rhead{Project 2}
+\maketitle
+\thispagestyle{fancy}
+
+\section{Project Description}
+
+In this project, you will build a compiler backend for Tiger-IR that generates MIPS32 assembly code. Your backend should read in a text-formatted Tiger-IR program, perform instruction selection and register allocation, and write the generated assembly code to a file. The generated assembly code should be able to execute on the SPIM simulator that will be given to you. To limit the scope of the project, all Tiger-IR programs which will be tested against your backend won't contain any floating--point variables.
+
+As with Project 1, you may choose any of the following implementation languages: Java, Python, C, or C++. Detailed instructions on how to submit your project and what to include are given in Section~\ref{sec:grading}.
+
+\subsection{Instruction Selection}\label{sec:instruction-selection}
+
+The first step is to implement an instruction selector that transforms Tiger-IR instructions to MIPS32 instructions that operate on an unlimited number of virtual registers. The code that you generate must be executable on the SPIM simulator, and it may utilize pseudo--instructions supported by SPIM. It will suffice to implement a simple instruction selector that translates one IR instruction at a time. Use SPIM system calls to implement intrinsic functions in Tiger-IR.
+
+In cases where there are multiple ways to translate an IR instruction to a corresponding MIPS32 instruction, you may use any of them in your implementation as long as doing so does not add unnecessary memory operations or useless instructions. You do not need to care about handling integer overflow exceptions.
+
+%You can get familiar with MIPS and SPIM through the following links:
+%\begin{itemize}
+    %\item \href{https://piazza.com/class_profile/get_resource/k3yyns79p92398/k70u4htpw8r75f}{CS4240 Lecture 13 slides}
+    %\item \href{http://students.cse.tamu.edu/pritam2309/csce350/reference/quick_ref_MIPS.html}{MIPS architecture and assembly language overview}
+    %\item \href{http://www2.engr.arizona.edu/~ece369/Resources/spim/QtSPIM_examples.pdf}{More information about pseudo instructions (which may simplify your work)}
+    %\item \href{http://cgi.cse.unsw.edu.au/~cs1521/17s2/docs/spim.php}{SPIM instruction set (including pseudo instructions, not complete)}
+    %\item \href{http://svn.code.sf.net/p/spimsimulator/code/Documentation/SourceForge/HP_AppA.pdf}{A complete list of (pseudo) instructions supported by SPIM (starting from page A-51)}
+    %\item \href{http://ww2.cs.fsu.edu/~dennis/teaching/2013_summer_cda3100/week5/week5-day2.pdf}{MIPS floating point instructions}
+%\end{itemize}
+
+While we will learn about MIPS in class, you can also find some helpful resources on MIPS and SPIM at \url{https://github.gatech.edu/CS-4240-Fall-2025/Project-2/tree/master/resources}.
+\begin{itemize}
+    \item Lecture notes from UArizona: Learning MIPS \& SPIM
+    \item Documentation for MIPS \& SPIM (refer to sections A.6 \& A.10)
+    \item Lecture notes from UWashington: MIPS Calling Convention
+\end{itemize}
+
+%You are also free to design your own calling convention, so long as it executes correctly on the SPIM simulator.
+
+%We recommend that all 10 ``temporary'' registers (\$t0 -- \$t9, corresponding to physical registers \$8 -- \$15 and \$24 -- \$25) are saved before each function call, and restored after each function call.
+%This code for register save and restore operations ensures that the program's results will be correct even if a callee function overwrites temporary registers that are being used by its caller.
+
+There are no strict requirements on the calling convention you implement, but make sure it executes correctly on the SPIM simulator. Make sure you correctly insert register save and restore operations for temporary registers before and after each function call. The program's results need to be correct even if a callee function overwrites temporary registers that were previously used by its caller. We also recommend that all your register allocator implementations only use the \textit{10 temporary registers (\$t0 -- \$t9)} by default.
+
+
+%Details on the standard convention for using MIPS registers can be found in \url{http://students.cse.tamu.edu/pritam2309/csce350/reference/quick_ref_MIPS.html}.
+
+
+One of the challenges you will face is in memory management of arrays. Since each array in Tiger-IR has a static size, you can allocate space for it on the stack. Another choice is to allocate arrays in the heap using the \texttt{sbrk} system call. If you choose to use the heap, you need not worry about memory leaks or garbage-collecting the arrays in this project, though those are important real-world considerations.
+
+As a debugging aid, we provide the MIPS Interpreter which also works with symbolic registers (unlike real MIPS instructions). For simple test programs, this can be used to test your instruction selection implementation before you perform register allocation as discussed in the next section.
+
+\subsection{Register Allocation}
+
+After instruction selection, the main remaining step to produce executable machine code is register allocation. You are required to implement two register allocators in this project: the first is a \textit{\textbf{naive register allocator}} (Section~\ref{sec:naive}) and the second is a \textit{\textbf{local/intra-block register allocator}} (Section~\ref{sec:block}).
+
+%or a global
+%Chaitin-Briggs style graph coloring register allocator that spans an 
+%entire function/procedure  (Section~\ref{sec:chaitin}, which can also
+%contribute to extra credit).
+
+You will compare the performance of the code generated by the two register allocators. The choice of register allocator should be possible with a command-line option when invoking your compiler backend, and the option usage should be specified in your design document.
+
+%In the local/intra-block allocator, you may need to reserve some physical registers to temporarily hold the spilled virtual values loaded from the stack.
+
+\subsubsection{Naive Allocation}\label{sec:naive}
+
+The simplest register allocation scheme is the one which requires no analysis. Each virtual register is allocated space on the stack. Before each instruction, the operands are loaded into physical registers. The instruction then executes, and finally the result is stored back into the appropriate register's location on the stack. Thus, for each instruction in the IR stream, you will generate and insert the necessary load(s) before that instruction and you will generate and insert the necessary store(s) after that instruction. This scheme will be slow, but it will produce correct working code.
+ 
+ \subsubsection{Intra-Block Register Allocation}\label{sec:block}
+ 
+An improvement to the naive scheme is to identify basic blocks in the IR stream
+and then perform a liveness analysis at the intra-block level (i.e. only within each basic block). Notice that at the start of each block, you will need to load a set of variables that you expect to use, and similarly, at the end of each block, you will need to store all values from your registers to memory.
+
+Use the simple \textit{\textbf{greedy algorithm}} as follows: assign a register to the live range which has the maximum number of uses in a block, then another register to the live range with the next highest number of uses, and so on. After you run out of registers, all remaining virtual registers will need to be spilled.
+
+To spill a virtual register, you need to allocate space for it on the stack and insert load/store instructions for all its accesses. Simply allocating new stack memory for each spilled register is good enough in this project. You may also need to reserve some registers to temporarily hold the values for spilled registers when they are loaded from the stack.
+
+Your work on analyzing liveness in Project 1 may be helpful in identifying live variables. For intra--block register allocation, you can build an intra--block interference graph and assume that all variables are alive at the end of a block. This allows you to reuse a physical register by storing a temporarily dead value (in the current block) to memory immediately before the physical register is reused. This will save the old register value, which may or may not be used in later blocks. This approach suffices for a correct implementation. However, you are also welcome to consider global liveness information to improve your implementation.
+
+%Note that this approach degenerates to the naive approach in Section~\ref{sec:naive}, if basic blocks were not maximal but instead contained only one instruction each.
+
+\section{Provided Code}
+
+\subsection{Helper Code}
+
+We are not providing new helper code for this project.
+You can use the code from Project 1 to parse Tiger-IR files.
+
+\subsection{The SPIM Simulator}
+
+SPIM is a MIPS simulator you will use to run the MIPS assembly code you generate.
+Please install SPIM by following instructions at: \url{https://github.com/rudyjantz/spim-keepstats/blob/master/README_4240}. Note that SPIM has some dependencies, as stated in the instructions. If the makefile fails because of a missing package, you can install it using your package manager. For example, on Debian and Ubuntu systems, you may need to run the following.
+\begin{lstlisting}[]
+$ sudo apt install flex
+$ sudo apt install bison
+\end{lstlisting}
+
+This version of SPIM outputs some statistics to your console that are useful for performance evaluation. Below is an example usage of SPIM.
+
+\begin{lstlisting}[]
+#!/bin/bash
+$ spim -keepstats -f helloworld.s
+Loaded: /usr/share/spim/exceptions.s
+Hello World
+Stats -- #instructions : 13
+         #reads : 2  #writes 0  #branches 2  #other 9
+
+# Usage example of feeding input file
+# spim -keepstats -f file.s < input.in
+\end{lstlisting}
+
+The performance metric we will focus on in this project is \textit{\textbf{the number of memory loads (reads)}}.  While the number of loads is only a partial contributor to performance in a real-world setting, it is the metric that is most directly influenced by register allocation, which makes it an appropriate focus for this project. The value reported by SPIM is a dynamic count which depends on program input, not a static count that can be made only from the MIPS instructions.
+
+\section{Grading}
+\label{sec:grading}
+
+\subsection{Correct Implementation (50 Points)}
+\label{sec:correct}
+You may organize your implementation in any way using one of Java, Python, C, or C++. Your submission must include two shell scripts, \texttt{build.sh} and \texttt{run.sh}. \texttt{build.sh} should build your submission from source, as in Project 1. Make sure to document in your \texttt{report.pdf} any dependencies or version numbers required for \texttt{build.sh}. \textbf{\texttt{run.sh} must take exactly two terminal arguments---a path to an input IR file---and---a path to out.s---along with one flag specifying either the naive (\texttt{--naive}) or intra-block greedy register allocation (\texttt{--greedy}). It should output an output a file \texttt{out.s} containing the generated MIPS32 code.} For example, if a Tiger-IR file is located at \texttt{path/to/file.ir}, then it should be possible to run \texttt{run.sh} as follows.
+\begin{lstlisting}[]
+$ run.sh path/to/file.ir --naive
+# Produces path/to/out.s
+$ run.sh path/to/file.ir --greedy
+# Produces path/to/out.s
+\end{lstlisting}
+
+
+Several test cases are given to you to test the correctness of your backend:
+
+\url{https://github.gatech.edu/CS-4240-Fall-2025/Project-2/tree/master/public_test_cases}. Similarly to Project~1, we may test for correctness using additional test cases which are not provided. Since there are many implementation choices in instruction selection, there is no canonical output which your backend must produce. To test it, we compare the results of running the TigerIR interpreter (same as in Project~1, \url{https://github.gatech.edu/CS-4240-Fall-2025/Project-2/tree/master/src}) on the input IR program with the results of running SPIM on an output assembly program. As in Project~1, you are welcome to design and add your own test cases to check that instruction selection behaves correctly on all TigerIR instructions.
+
+You will get points for correct implementations of the following items:
+\begin{itemize}
+    \item Instruction selection and naive register allocation (35 points): This portion of the evaluation is based on the correctness of programs generated by your backend; \textit{i.e.}, do the programs produced by your backend pass test cases.
+    \item Additional intra--block register allocation (15 points): This portion of the evaluation is based on the correct implementation of intra--block register allocation and the number of load instructions used by the generated code. To receive full credit, your implementation must still pass test cases for correctness, reduce the number of load instructions compared to the naive implementation, and include at least intra--block liveness analysis.
+\end{itemize}
+
+Since there are many different ways to implement register allocation and the results depend on the input to a program, it is not possible to give concrete values for the number of load instructions in each test case. Depending on the input program, if your register allocation reduces the number of memory loads by 30-60\% over the naive approach, you should be in good shape. We may also inspect your implementation in evaluating the correctness of intra--block register allocation.
+
+
+\subsection{Performance Evaluation (20 Points)}\label{sec:eval}
+
+For this section, compare the performance of the two register allocators and show the results in your project report. You will need to run MIPS programs generated from the test cases using your backend with the two different register allocator options, and analyze the performance statistics. The provided SPIM simulator will print the number of memory reads to your console. If you feel that the given test cases cannot show the benefits of a better register allocator, please design your own test cases and submit them along with your code and report.
+
+\subsection{Design (30 Points)}\label{sec:design}
+
+In your final report, in addition to the performance evaluation results,
+briefly describe the following:
+%
+\begin{enumerate}
+\item High-level architecture of your backend, including the
+  algorithm(s) implemented, and why you chose that approach.
+\item Low-level design decisions you made in instruction selection and register allocation,
+    along with their rationale.
+\item Software engineering challenges and issues that arose and how
+  you resolved them.
+\item Any known outstanding bugs or deficiencies that you were unable
+  to   resolve before the project submission.
+\item Any test cases that you created to obtain performance results during testing. In addition, include any additional usage instructions for your backend, including any dependencies or version numbers required for \texttt{build.sh}.
+ \end{enumerate}
+
+\section{Submission}\label{sec:sub}
+
+On Gradescope, submit a single ZIP file that contains:
+\begin{itemize}
+    \item The complete source code of your project.
+    \item The files \texttt{build.sh} and \texttt{run.sh} as described in Section~\ref{sec:correct}.
+    \item The \texttt{report.pdf} file described in Section~\ref{sec:eval} and~\ref{sec:design}.
+    \item Any test cases you added.
+\end{itemize}
+
+\section{Collaboration}
+%
+The collaboration policy and expectations are the same as in project 1.
+
+\end{document}
