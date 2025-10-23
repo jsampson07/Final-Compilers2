@@ -6,6 +6,7 @@ public enum MIPSOp {
     BEQ, BNE, BLT, BGT, BGE, // branches
     J, JAL, JR, // jumps
     SYSCALL,
+    LABEL, // added for the LABEL op
     // single-precision fp arithmetic
     ADD_S(true), ADDI_S(true), SUB_S(true), MUL_S(true), DIV_S(true),
     // single-precision fp data movement
