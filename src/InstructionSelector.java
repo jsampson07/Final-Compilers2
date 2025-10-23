@@ -50,17 +50,37 @@ public class InstructionSelector {
         // now we will allocate space for ALL local variables
         //int curr_offset = -8; // we are offsetting from $fp and this points to base ==> $ra and old $fp are saved on the stack ALWAYS (or space ALWAYS allocated)
         int local_section_size = 0;
+        int curr_local_offset = -8;
         for (IRVariableOperand var : function.variables) {
             if (var.type instanceof IRArrayType) { // if it is an array
-                local_section_size += ((IRArrayType) var.type).getSize() * WORD_SIZE;
+                int size = ((IRArrayType) var.type).getSize() * WORD_SIZE;
+                curr_local_offset-=size; // this is where the local var will go
+                local_section_size += size;
             } else { // otherwise it is 4 bytes (int/char)
+                curr_local_offset-=WORD_SIZE;
                 local_section_size += WORD_SIZE;
             }
+            offsets_stack.put(var.getName(), curr_local_offset); // add this to the stack map with correct offset
             //curr_offset-=size;
             // this is all going to be relative to $fp
         }
 
-        // here we will be allocating space for the argument slots where they will be used by the caller but USED by the callee
+        // allocate space for the parameters passed in
+        int passed_in_args = 0; // this is to allocate space to potentially save $a0-$a3 registers or less (passed in from caller)
+        int curr_params_offset = curr_local_offset;
+        for (int i = 0; i < function.parameters.length; i++) {
+            // do we need to account for parameters being arrays?????
+            if (i < 4) { // while we are still working with $a0-$a3
+                curr_params_offset-=WORD_SIZE;
+                passed_in_args+=WORD_SIZE;
+                offsets_stack.put(function.parameters[i].getName());
+            } else { // this is we had to spill arguments in the caller
+                int offset_to_caller = 4 + (i-4)*WORD_SIZE;
+                offsets_stack.put(function.parameters[i].getName(), offset_to_caller); // this will be a positive offset from curr $fp
+            }
+        }
+
+        // this is to allocate the maximum amount of space needed for outgoing args, we always want at least 4 slots for $a0-$a3 in case
         int arg_section_size = 0; // needed for outgoing arguments
         for (IRInstruction instruc : function.instructions) {
             if (instruc.opCode == IRInstruction.OpCode.CALL) {
@@ -75,9 +95,7 @@ public class InstructionSelector {
             max_num_args_called*=WORD_SIZE; // if we have 4 or more then we just allocate the amount we have
         }
 
-
-
-        int total_frame_size = local_section_size + arg_section_size + (2*WORD_SIZE); // 2*WORD_SIZE is for $ra and $fp (we will always allocate space for $ra here for simplicity
+        int total_frame_size = local_section_size + arg_section_size + passed_in_args + (2*WORD_SIZE); // 2*WORD_SIZE is for $ra and $fp (we will always allocate space for $ra here for simplicity
         if (total_frame_size % 8 != 0) {
             total_frame_size+=WORD_SIZE;
         }
@@ -152,19 +170,21 @@ public class InstructionSelector {
             // now lets set our frame pointer value after saving the previous frame pointer value
             Imm offset = new Imm("" + (total_size), "DEC");
             add_regular_to_mips(MIPSOp.ADDI, null, fp, sp, total_frame_size);
-        }
 
-        // now we want to map all of the registers and variables
-        // start with argument registers ($a0-$a3)
-        int curr_offset = -8; // always start after $ra and $fp
+            if (int i = 0; i < function.parameters.length && i < 4; i++) {
+                int offset = offsets_stack.get(function.parameters[i].getName());
+                Register get_reg = new Register("$a" + i, false); // this is a real register
+                Imm imm = new Imm(("" + offset, "DEC"), fp);
+                Addr store_at = new Addr(imm);
+                add_regular_to_mips(MIPSOp.SW, null, get_reg, store_at);
+            }
+        }
 
         for (IRInstruction instruc : function.instructions) {
             translate_ir_to_mips(instruc, function);
         }
 
-        // perform resetting the stack here !!!
-
-        //...
+        // resetting the stack (rebuilding can be done in RETURN)
 
         return mips_program;
     }
@@ -175,6 +195,25 @@ public class InstructionSelector {
                 break;
             // there are two versions of assign: 2 ops AND 3 ops (array initialization)
             case ASSIGN:
+                if (instruc.operands.length == 2) {
+                    Register dest_reg = get_virtual_register(instruc.operands[0]);
+                    if (instruc.operands[1] instanceof IRConstantOperand) {
+                        String value = ((IRConstantOperand) instruc.operands[1]).getValueString();
+                        String type;
+                        if (value.startsWith("0x")) {
+                            type = "HEX";
+                        } else {
+                            type = "DEC";
+                        }
+                        Imm imm = new Imm(value, type);
+                        add_regular_to_mips(MIPS.LI, null, dest_reg, imm);
+                    } else {
+                        Register src_reg = get_virtual_register(instruc.operands[1]);
+                        add_regular_to_mips(MIPS.LI, null, dest_reg, src_reg);
+                    }
+                } else { // here we have the case where we have 3 operands ==> ARRAY INITIALIZATION
+                    // start here...
+                }
                 break;
             case ADD:
                 Register dest_reg = get_virtual_register(instruc.operands[0]);
