@@ -36,6 +36,7 @@ javac -d "$BUILD_DIR" -sourcepath "$MAIN_SRC_DIR":"$MIPS_SRC_DIR" \
     "$MAIN_SRC_DIR"/ir/datatype/*.java \
     "$MAIN_SRC_DIR"/ir/operand/*.java \
     "$MIPS_SRC_DIR"/main/java/mips/MIPSInstruction.java \
+    "$MIPS_SRC_DIR"/main/java/mips/MIPSInterpreter.java \
     "$MIPS_SRC_DIR"/main/java/mips/MIPSProgram.java \
     "$MIPS_SRC_DIR"/main/java/mips/MIPSOp.java \
     "$MIPS_SRC_DIR"/main/java/mips/MemLayout.java \

@@ -186,6 +186,34 @@ public class InstructionSelector {
         for (IRInstruction instruc : function.instructions) {
              translate_ir_to_mips(instruc, function);
         }
+
+
+        
+
+
+        // DO WE EVEN NEED THIS ANYMORE??????????????????
+        if (function.name.equals("main")) {
+            add_regular_to_mips(MIPSOp.LI, v0, new Imm("10", "DEC")); // code 10 = exit
+            add_regular_to_mips(MIPSOp.SYSCALL);
+        } else {
+            // Add implicit epilogue for non-main functions
+            // This prevents "fall-through"
+            if (current_frame_size > 0) {
+                // Restore $ra
+                if (current_is_non_leaf) {
+                    // This logic is from your case RETURN
+                    int ra_save_offset = 4; // Relative to $fp
+                    add_regular_to_mips(MIPSOp.LW, ra, new Addr(new Imm("" + ra_save_offset, "DEC"), fp));
+                }
+                // Restore old $fp
+                int fp_save_offset = 0; // Relative to $fp
+                add_regular_to_mips(MIPSOp.LW, fp, new Addr(new Imm("" + fp_save_offset, "DEC"), fp));
+                
+                // Deallocate frame
+                add_regular_to_mips(MIPSOp.ADDI, sp, sp, new Imm("" + current_frame_size, "DEC")); 
+            }
+            add_regular_to_mips(MIPSOp.JR, ra); // Return to caller
+        }
     } // End translate_function
 
 
@@ -195,7 +223,9 @@ public class InstructionSelector {
 
         switch(instruc.opCode) {
             case LABEL:
-                add_regular_to_mips(MIPSOp.LABEL, new Addr(((IRLabelOperand) instruc.operands[0]).getName()));
+                String l_label_name = ((IRLabelOperand) instruc.operands[0]).getName();
+                String l_unique_label = func.name + "_" + l_label_name;
+                add_regular_to_mips(MIPSOp.LABEL, new Addr(l_unique_label));
                 break;
 
             case ASSIGN: { // assign, dest, src OR assign, array, size, value
@@ -323,8 +353,9 @@ public class InstructionSelector {
             case BRGT:
             case BRGEQ:
             {
-                String label_name = ((IRLabelOperand) instruc.operands[0]).getName();
-                Addr labelAddr = new Addr(label_name);
+                String b_label_name = ((IRLabelOperand) instruc.operands[0]).getName();
+                String b_unique_label = func.name + "_" + b_label_name;
+                Addr labelAddr = new Addr(b_unique_label);
                 IROperand op1 = instruc.operands[1];
                 IROperand op2 = instruc.operands[2];
 
@@ -341,7 +372,9 @@ public class InstructionSelector {
             }
 
             case GOTO:
-                add_regular_to_mips(MIPSOp.J, new Addr(((IRLabelOperand) instruc.operands[0]).getName()));
+                String g_label_name = ((IRLabelOperand) instruc.operands[0]).getName();
+                String g_unique_label = func.name + "_" + g_label_name;
+                add_regular_to_mips(MIPSOp.J, new Addr(g_unique_label));
                 break;
 
             case RETURN: {
@@ -350,24 +383,19 @@ public class InstructionSelector {
                 }
 
                 // Epilogue
-                if (func.name.equals("main")) {
-                    add_regular_to_mips(MIPSOp.LI, v0, new Imm("10", "DEC"));
-                    add_regular_to_mips(MIPSOp.SYSCALL);
-                } else {
-                    if (current_frame_size > 0) {
-                        // Restore $ra
-                        if (current_is_non_leaf) {
-                            int ra_save_offset = 4; // Relative to $fp
-                            add_regular_to_mips(MIPSOp.LW, ra, new Addr(new Imm("" + ra_save_offset, "DEC"), fp));
-                        }
-                        // Restore old $fp
-                        int fp_save_offset = 0; // Relative to $fp
-                        add_regular_to_mips(MIPSOp.LW, fp, new Addr(new Imm("" + fp_save_offset, "DEC"), fp));
-                        // Deallocate frame
-                        add_regular_to_mips(MIPSOp.ADDI, sp, sp, new Imm("" + current_frame_size, "DEC")); // Use ADDI
+                if (current_frame_size > 0) {
+                    // Restore $ra
+                    if (current_is_non_leaf) {
+                        int ra_save_offset = 4; // Relative to $fp
+                        add_regular_to_mips(MIPSOp.LW, ra, new Addr(new Imm("" + ra_save_offset, "DEC"), fp));
                     }
-                    add_regular_to_mips(MIPSOp.JR, ra); // Use JR
+                    // Restore old $fp
+                    int fp_save_offset = 0; // Relative to $fp
+                    add_regular_to_mips(MIPSOp.LW, fp, new Addr(new Imm("" + fp_save_offset, "DEC"), fp));
+                    // Deallocate frame
+                    add_regular_to_mips(MIPSOp.ADDI, sp, sp, new Imm("" + current_frame_size, "DEC")); // Use ADDI
                 }
+                add_regular_to_mips(MIPSOp.JR, ra); // Use JR
                 break;
             } // End RETURN
 
@@ -629,15 +657,15 @@ public class InstructionSelector {
     public void add_regular_to_mips(MIPSOp op, String label, MIPSOperand... operands) {
         MIPSInstruction instruc = new MIPSInstruction(op, label, operands);
         // Add this line for debugging:
-        System.out.println("DEBUG: Adding MIPS - ");
+        System.out.println("DEBUG: Adding MIPS - " + instruc.toString());
         mips_program.add_instruction(new MIPSInstruction(op, label, operands));
     }
     public void add_regular_to_mips(MIPSOp op, MIPSOperand... operands) {
-        System.out.println("DEBUG: Adding MIPS -");
+        //System.out.println("DEBUG: Adding MIPS -");
         add_regular_to_mips(op, null, operands);
     }
      public void add_regular_to_mips(MIPSOp op, Addr label_addr) { // For J, JAL, LABEL, LA $ra, label
-        System.out.println("DEBUG: Adding MIPS - ");
+        //System.out.println("DEBUG: Adding MIPS - ");
         if (op == MIPSOp.LABEL) {
              add_regular_to_mips(op, label_addr.toString(), new MIPSOperand[0]);
         } else if (op == MIPSOp.LA) { // Handle LA $ra, label case specifically if needed
@@ -647,27 +675,23 @@ public class InstructionSelector {
              add_regular_to_mips(op, null, label_addr); // This might be wrong, depends on MIPSInstruction constructor
         }
         else { // J, JAL
-             add_regular_to_mips(op, null, label_addr);
+            add_regular_to_mips(op, (MIPSOperand)label_addr);
         }
     }
     // Overload for LA Rdest, Addr
     public void add_regular_to_mips(MIPSOp op, Register rDest, Addr label_addr) {
-        System.out.println("DEBUG: Adding MIPS - ");
-        if (op == MIPSOp.LA) {
-            add_regular_to_mips(op, rDest, label_addr);
-        } else {
-             System.err.println("Warning: Reg, Addr overload used for non-LA op: " + op);
-        }
+        //System.out.println("DEBUG: Adding MIPS - ");
+        add_regular_to_mips(op, (MIPSOperand)rDest, (MIPSOperand)label_addr);
     }
 
     // Branch overload (label, r1, r2)
     public void add_regular_to_mips(MIPSOp op, Addr label, Register r1, Register r2) {
-        System.out.println("DEBUG: Adding MIPS - ");
+        //System.out.println("DEBUG: Adding MIPS - ");
         add_regular_to_mips(op, r1, r2, label);
     }
     // Branch overload (label, r1, imm)
     public void add_regular_to_mips(MIPSOp op, Addr label, Register r1, Imm imm) {
-        System.out.println("DEBUG: Adding MIPS - ");
+        //System.out.println("DEBUG: Adding MIPS - ");
          // Assuming MIPSInstruction handles op, r1, imm, label for pseudo-ops
           if (op == MIPSOp.BGE) { // Extend for other immediate branches if needed
              add_regular_to_mips(op, r1, imm, label);
@@ -677,11 +701,12 @@ public class InstructionSelector {
     }
      // Overload for JR Rtarget
      public void add_regular_to_mips(MIPSOp op, Register targetReg) {
-        System.out.println("DEBUG: Adding MIPS - ");
+        //System.out.println("DEBUG: Adding MIPS - ");
          if (op == MIPSOp.JR) {
-             add_regular_to_mips(op, targetReg);
+             add_regular_to_mips(op, (MIPSOperand) targetReg);
          } else {
              System.err.println("Warning: Single register overload used for non-JR op: " + op);
+             add_regular_to_mips(op, (MIPSOperand) targetReg);
          }
      }
      // Removed MFLO/MFHI overload as they are not available

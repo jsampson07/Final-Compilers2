@@ -17,9 +17,13 @@ public class Demo {
         IRReader irReader = new IRReader();
 
         /* IRProgram -> IRFunction -> (IRVariableOperand and IRInstruction) -> [IRInstruction] ==> (OpCode, IROperand) */
+
+        System.out.println("The file is: " + args[0]);
+
         IRProgram program = irReader.parseIRFile(args[0]); //Work on this object
 
         for (IRFunction function : program.functions) {
+            System.out.println("\nTHIS IS ITTTTTT\n");
             IRcfg cfg = new IRcfg(function); // we create the CFG for this function
             // now we want to run the optimizer
             /* Reaching Definitions Analysis 
@@ -51,9 +55,12 @@ public class Demo {
             sweepAlg(cfg, function);
         }
 
+        System.out.println("length of program: " + program.functions.size());
+
         // let's start instruction select phase here
         InstructionSelector instruc_selector = new InstructionSelector();
         MIPSProgram mips_program = instruc_selector.select_instructions(program);
+
 
         System.out.println("This is the length of instruction_list for MIPS program: " + mips_program.instruction_list.size());
         for (MIPSInstruction instruc : mips_program.instruction_list) {
@@ -73,10 +80,6 @@ public class Demo {
         } catch (Exception e) {
             System.out.println("WE HAVE FAILED TO WRITE TO FILE!!!!");
         }
-
-        // Print the IR to another file
-        IRPrinter filePrinter = new IRPrinter(new PrintStream(args[1]));
-        filePrinter.printProgram(program);
 
         // Create an IR printer that prints to stdout
         IRPrinter irPrinter = new IRPrinter(new PrintStream(System.out));
