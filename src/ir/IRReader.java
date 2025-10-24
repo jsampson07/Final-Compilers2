@@ -266,7 +266,11 @@ public class IRReader {
                 throw new IRException("Invalid main function", signatureLine.lineNumber);
         }
 
-        return new IRFunction(functionName, retType, params, new ArrayList<>(variableMap.values()), instructions);
+        // everything is being treated like a local variable
+        List<IRVariableOperand> localVariables = new ArrayList<>(variableMap.values());
+        localVariables.removeAll(params);
+        
+        return new IRFunction(functionName, retType, params, localVariables, instructions);
     }
 
     private Pattern arrayPattern = Pattern.compile("^(.+)\\[(\\d+)\\]$");
