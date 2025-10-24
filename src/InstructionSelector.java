@@ -14,6 +14,7 @@ import java.util.Map;
 public class InstructionSelector {
     public MISPProgram mips_program;
     public Map<String, Integer> offsets_stack;
+    public Map<String, Register> virt_regs;
     public int frame_size;
     public int counter;
     // here are the actual registers for frame allocation
@@ -34,7 +35,7 @@ public class InstructionSelector {
         }
         mips_program = new MIPSProgram();
         mips_program.add_to_text_dirs(".text");
-        mips_program.add_to_data_dirs(".global main");
+        mips_program.add_to_data_dirs(".globl main");
         for (IRFunction function : ir_program.functions) {
             translate_function(function);
         }
@@ -42,12 +43,15 @@ public class InstructionSelector {
 
     public void translate_function(IRFunction function) {
         offsets_stack = new HashMap<>();
+        virt_regs = new HashMap<>();
         /* WHAT DO WE WANT OUR STACK FRAME TO LOOK LIKE????
             - prev fp
             - ra
             - arguments from caller
             - saved */
         // now we will allocate space for ALL local variables
+        count=0;
+        int is_leaf = 1;
         //int curr_offset = -8; // we are offsetting from $fp and this points to base ==> $ra and old $fp are saved on the stack ALWAYS (or space ALWAYS allocated)
         int local_section_size = 0;
         int curr_local_offset = -8;
@@ -73,9 +77,9 @@ public class InstructionSelector {
             if (i < 4) { // while we are still working with $a0-$a3
                 curr_params_offset-=WORD_SIZE;
                 passed_in_args+=WORD_SIZE;
-                offsets_stack.put(function.parameters[i].getName());
+                offsets_stack.put(function.parameters[i].getName(), curr_params_offset);
             } else { // this is we had to spill arguments in the caller
-                int offset_to_caller = 4 + (i-4)*WORD_SIZE;
+                int offset_to_caller = (i-4)*WORD_SIZE;
                 offsets_stack.put(function.parameters[i].getName(), offset_to_caller); // this will be a positive offset from curr $fp
             }
         }
@@ -84,9 +88,11 @@ public class InstructionSelector {
         int arg_section_size = 0; // needed for outgoing arguments
         for (IRInstruction instruc : function.instructions) {
             if (instruc.opCode == IRInstruction.OpCode.CALL) {
+                is_leaf = 0;
                 arg_section_size = Math.max(arg_section_size, instruc.operands.length - 1); // has one less operand
             } else if (instruc.opCode == IRInstruction.OpCode.CALLR) {
                 arg_section_size = Math.max(arg_section_size, instruc.operands.length - 2);
+                is_leaf = 0;
             }
         }
         if (arg_section_size < 4) { // account for word_size here because before we just had a count of args
@@ -157,18 +163,20 @@ public class InstructionSelector {
         // set new sp value (after allocating frame size amount)
         if (total_frame_size > 0) {
             // we want to move the stack frame pointer to the top of the newly created stack frame
-            Imm frame_size = new Imm("-" + (total_size), "DEC");
+            Imm frame_size = new Imm("-" + (total_frame_size), "DEC");
             add_regular_to_mips(MIPSOp.SUB, sp, sp, frame_size);
             // store value in $ra into memory location at offset
-            Imm ret_offset = new Imm("-" + (total_size-4), "DEC");
-            Addr ret_location = new Addr(ret_offset, sp);
-            add_regular_to_mips(MIPSOp.SW, ra, ret_location);
+            if (!is_leaf) {
+                Imm ret_offset = new Imm("-" + (total_frame_size-4), "DEC");
+                Addr ret_location = new Addr(ret_offset, sp);
+                add_regular_to_mips(MIPSOp.SW, ra, ret_location);
+            }
             // store value in $fp into memory location at offset
-            Imm frame_offset = new Imm("-" + (total_size-8), "DEC");
+            Imm frame_offset = new Imm("-" + (total_frame_size-8), "DEC");
             Addr frame_location = new Addr(frame_offset, sp);
             add_regular_to_mips(MIPSOp.SW, fp, frame_location);
             // now lets set our frame pointer value after saving the previous frame pointer value
-            Imm offset = new Imm("" + (total_size), "DEC");
+            Imm offset = new Imm("" + (total_frame_size), "DEC");
             add_regular_to_mips(MIPSOp.ADDI, null, fp, sp, total_frame_size);
 
             if (int i = 0; i < function.parameters.length && i < 4; i++) {
@@ -192,6 +200,8 @@ public class InstructionSelector {
     public void translate_ir_to_mips(IRInstruction instruc, IRFunction func) {
         switch(instruc.opCode) {
             case LABEL:
+                Addr addr = new Addr(((IRLabelOperand) instruc.operands[0]).getName())
+                add_regular_to_mips(MIPSOp.LABEL, addr);
                 break;
             // there are two versions of assign: 2 ops AND 3 ops (array initialization)
             case ASSIGN:
