@@ -52,6 +52,12 @@ public class InstructionSelector {
         mips_program = new MIPSProgram();
         System.out.println("ARE WE PASSED THIS??");
 
+        // --- FIX: Add bootstrap jump to main ---
+        // The interpreter starts at the top of the file, but execution
+        // must begin at the 'main' label. This jump gets us there.
+        add_regular_to_mips(MIPSOp.J, new Addr("main"));
+        // --- End bootstrap ---
+
         for (IRFunction function : ir_program.functions) {
             System.out.println("\nwe are inside the LOOP\n");
             translate_function(function);
