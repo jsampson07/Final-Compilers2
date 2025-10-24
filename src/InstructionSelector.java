@@ -3,18 +3,17 @@ import ir.datatype.IRArrayType;
 import ir.operand.*;
 import main.java.mips.*;
 import main.java.mips.operand.*;
+import static main.java.mips.MIPSInstruction.WORD_SIZE;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger; // For unique labels
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class InstructionSelector {
-    // --- Fields ---
     public MIPSProgram mips_program;
     public Map<String, Integer> offsets_stack;
-    private static AtomicInteger labelCounter = new AtomicInteger(0); // For generating unique labels
-
-    private static final int WORD_SIZE = 4;
+    // this will be used to generate unique labels across each function
+    private static int label_counter = 0;
 
     // --- Physical Registers ---
     public Register fp = new Register("$fp", false);
@@ -33,11 +32,6 @@ public class InstructionSelector {
 
     public int current_frame_size;
     public boolean current_is_non_leaf;
-
-    // Helper to generate unique label names
-    private String get_unique_label(String prefix) {
-        return prefix + "_" + labelCounter.getAndIncrement();
-    }
 
     public MIPSProgram select_instructions(IRProgram ir_program) {
         if (ir_program == null) {
@@ -613,7 +607,14 @@ public class InstructionSelector {
         }
     }
 
-    // get_arg_register remains the same
+    // this is used to generate unique label names
+    private String get_unique_label(String prefix) {
+        String full_str = prefix + "_" + label_counter;
+        label_counter++;
+        return full_str;
+    }
+
+    // this is used to determine which register to use when saving arguments from $a0-$a3
     private Register get_arg_register(int index) {
         if (index == 0) {
             return a0;
@@ -630,10 +631,11 @@ public class InstructionSelector {
         return null;
     }
 
-     // handle_intrinsic_call remains the same
+    // this is used to handle intrinsic function calls according to Tiger-IR manual
+    // each of them has a separate "code"
      private void handle_intrinsic_function(IRInstruction instruc, String func_name, int first_arg_ir_index, IROperand destOp, IRFunction function) {
          switch (func_name) {
-             case "geti": // read_int: code 5, returns in $v0
+             case "geti": // code is 5
                  add_regular_to_mips(MIPSOp.LI, v0, new Imm("5", "DEC"));
                  add_regular_to_mips(MIPSOp.SYSCALL);
                  if (destOp instanceof IRVariableOperand) {
@@ -642,7 +644,7 @@ public class InstructionSelector {
                      add_regular_to_mips(MIPSOp.SW, v0, new Addr(new Imm("" + destOffset, "DEC"), fp));
                  }
                  break;
-             case "getc": // read_char: code 12, result in v0 (as per SPIM syscall list A.9.1)
+             case "getc": // code is 12
                  add_regular_to_mips(MIPSOp.LI, v0, new Imm("12", "DEC"));
                  add_regular_to_mips(MIPSOp.SYSCALL);
                  // Result is in v0 according to Figure A.9.1, not a0
@@ -652,14 +654,14 @@ public class InstructionSelector {
                      add_regular_to_mips(MIPSOp.SW, v0, new Addr(new Imm("" + destOffset, "DEC"), fp));
                  }
                  break;
-             case "puti": // print_int: code 1, arg in $a0
+             case "puti": // code is 1
                 if (instruc.operands.length > first_arg_ir_index) {
                     load_operand_to_physical_reg(instruc.operands[first_arg_ir_index], a0, function);
                     add_regular_to_mips(MIPSOp.LI, v0, new Imm("1", "DEC"));
                     add_regular_to_mips(MIPSOp.SYSCALL);
                 }
                 break;
-             case "putc": // print_char: code 11, arg in $a0
+             case "putc": // code is 11
                  if (instruc.operands.length > first_arg_ir_index) {
                      load_operand_to_physical_reg(instruc.operands[first_arg_ir_index], a0, function);
                      add_regular_to_mips(MIPSOp.LI, v0, new Imm("11", "DEC"));
@@ -725,20 +727,19 @@ public class InstructionSelector {
         return addr_reg;
     }
 
-
-    // --- add_regular_to_mips overloads --- (Ensure JR overload is correct)
     // this is going to be the main add_regular_to_mips which all other functions call
+    // bunch of overloaded functions tho because different instructions may give different fields
     public void add_regular_to_mips(MIPSOp op, String label, MIPSOperand... operands) {
         MIPSInstruction instruc = new MIPSInstruction(op, label, operands);
         mips_program.add_instruction(instruc);
     }
     public void add_regular_to_mips(MIPSOp op, MIPSOperand... operands) {
-        //System.out.println("DEBUG: Adding MIPS -");
         add_regular_to_mips(op, null, operands);
     }
-     public void add_regular_to_mips(MIPSOp op, Addr label_addr) { // For J, JAL, LABEL
+    // this is for J, JAL, and LABEL isntructions
+    public void add_regular_to_mips(MIPSOp op, Addr label_addr) {
         if (op == MIPSOp.LABEL) {
-             add_regular_to_mips(op, label_addr.toString(), new MIPSOperand[0]);
+                add_regular_to_mips(op, label_addr.toString(), new MIPSOperand[0]);
         } else { // J, JAL
             add_regular_to_mips(op, (MIPSOperand)label_addr);
         }
@@ -747,7 +748,6 @@ public class InstructionSelector {
     public void add_regular_to_mips(MIPSOp op, Register rDest, Addr label_addr) {
         add_regular_to_mips(op, (MIPSOperand)rDest, (MIPSOperand)label_addr);
     }
-
     // Branch overload (label, r1, r2)
     public void add_regular_to_mips(MIPSOp op, Addr label, Register r1, Register r2) {
         add_regular_to_mips(op, r1, r2, label);

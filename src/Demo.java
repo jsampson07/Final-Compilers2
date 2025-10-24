@@ -70,25 +70,14 @@ public class Demo {
         String output_filepath = args[1];
         PrintStream mips_output = new PrintStream(output_filepath);
 
-        // --- Start Replicated Logic ---
-        
-        // Print Text Segment directive
         mips_output.println(".text");
 
-        // Print Instructions
-        if (mips_program.instruction_list != null) {
-            for (MIPSInstruction instruction : mips_program.instruction_list) {
-                // Handle Labels separately for formatting
-                if (instruction.op == MIPSOp.LABEL && instruction.label != null) {
-                    // Print label with colon, no indentation
-                    mips_output.println(instruction.label + ":");
-                } else {
-                    // For non-label instructions, use toString() and add indentation
-                    // NOTE: This assumes non-LABEL instructions won't have their 'label' field set,
-                    // otherwise toString() might print the label redundantly.
-                    // MIPSPrinter's helper method was safer.
-                    mips_output.println("  " + instruction.toString());
-                }
+        for (MIPSInstruction instruction : mips_program.instruction_list) {
+            // we will handle labels separately because they need to be formatted with a colon
+            if (instruction.op == MIPSOp.LABEL && instruction.label != null) {
+                mips_output.println(instruction.label + ":");
+            } else {
+                mips_output.println("   " + instruction.toString());
             }
         }
 
