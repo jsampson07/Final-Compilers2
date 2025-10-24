@@ -6,6 +6,8 @@ import ir.operand.IRConstantOperand;
 import ir.operand.IROperand;
 import ir.operand.IRVariableOperand;
 
+import main.java.mips.*;
+
 import java.io.PrintStream;
 import java.util.*;
 
@@ -52,6 +54,25 @@ public class Demo {
         // let's start instruction select phase here
         InstructionSelector instruc_selector = new InstructionSelector();
         MIPSProgram mips_program = instruc_selector.select_instructions(program);
+
+        System.out.println("This is the length of instruction_list for MIPS program: " + mips_program.instruction_list.size());
+        for (MIPSInstruction instruc : mips_program.instruction_list) {
+            System.out.println(instruc.toString());
+        }
+
+        try {
+            String output_filepath = args[1];
+            PrintStream mips_output = new PrintStream(output_filepath);
+            MIPSPrinter mips_printer = new MIPSPrinter(mips_output);
+
+            mips_printer.printProgram(mips_program);
+
+            mips_output.close();
+
+            System.out.println("MIPS code written to " + output_filepath);
+        } catch (Exception e) {
+            System.out.println("WE HAVE FAILED TO WRITE TO FILE!!!!");
+        }
 
         // Print the IR to another file
         IRPrinter filePrinter = new IRPrinter(new PrintStream(args[1]));

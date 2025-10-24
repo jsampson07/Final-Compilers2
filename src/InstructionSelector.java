@@ -1,390 +1,690 @@
 import ir.*;
 import ir.datatype.IRArrayType;
-import ir.datatype.IRIntType;
-import ir.datatype.IRType;
 import ir.operand.*;
 import main.java.mips.*;
 import main.java.mips.operand.*;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger; // For unique labels
 
 public class InstructionSelector {
-    public MISPProgram mips_program;
+    // --- Fields ---
+    public MIPSProgram mips_program;
     public Map<String, Integer> offsets_stack;
-    public Map<String, Register> virt_regs;
-    public int frame_size;
-    public int counter;
-    // here are the actual registers for frame allocation
+    private static AtomicInteger labelCounter = new AtomicInteger(0); // For generating unique labels
+
+    public static final int WORD_SIZE = 4;
+
+    // --- Physical Registers ---
     public Register fp = new Register("$fp", false);
     public Register ra = new Register("$ra", false);
     public Register sp = new Register("$sp", false);
     public Register v0 = new Register("$v0", false);
+    public Register v1 = new Register("$v1", false);
     public Register a0 = new Register("$a0", false);
     public Register a1 = new Register("$a1", false);
     public Register a2 = new Register("$a2", false);
     public Register a3 = new Register("$a3", false);
-    public Register at = new Register("$at", false);
+    public Register t0 = new Register("$t0", false);
+    public Register t1 = new Register("$t1", false);
+    public Register t2 = new Register("$t2", false);
+    public Register t3 = new Register("$t3", false);
+    // Add t4-t9 if needed
+    public Register zero = new Register("$zero", false);
 
-    // this is where i translate the entire program
-    public MIPSProgram select_instructions(IRProgram ir_program) {
-        if (!ir_program) {
-            return null;
-        }
-        mips_program = new MIPSProgram();
-        mips_program.add_to_text_dirs(".text");
-        mips_program.add_to_data_dirs(".globl main");
-        for (IRFunction function : ir_program.functions) {
-            translate_function(function);
-        }
+    // --- State ---
+    public int current_frame_size;
+    public boolean current_is_non_leaf;
+
+    // Helper to generate unique label names
+    private String get_unique_label(String prefix) {
+        return prefix + "_" + labelCounter.getAndIncrement();
     }
 
-    public void translate_function(IRFunction function) {
-        offsets_stack = new HashMap<>();
-        virt_regs = new HashMap<>();
-        /* WHAT DO WE WANT OUR STACK FRAME TO LOOK LIKE????
-            - prev fp
-            - ra
-            - arguments from caller
-            - saved */
-        // now we will allocate space for ALL local variables
-        count=0;
-        int is_leaf = 1;
-        //int curr_offset = -8; // we are offsetting from $fp and this points to base ==> $ra and old $fp are saved on the stack ALWAYS (or space ALWAYS allocated)
-        int local_section_size = 0;
-        int curr_local_offset = -8;
-        for (IRVariableOperand var : function.variables) {
-            if (var.type instanceof IRArrayType) { // if it is an array
-                int size = ((IRArrayType) var.type).getSize() * WORD_SIZE;
-                curr_local_offset-=size; // this is where the local var will go
-                local_section_size += size;
-            } else { // otherwise it is 4 bytes (int/char)
-                curr_local_offset-=WORD_SIZE;
-                local_section_size += WORD_SIZE;
-            }
-            offsets_stack.put(var.getName(), curr_local_offset); // add this to the stack map with correct offset
-            //curr_offset-=size;
-            // this is all going to be relative to $fp
+    // --- Main Method ---
+    public MIPSProgram select_instructions(IRProgram ir_program) {
+        if (ir_program == null) {
+            System.out.println("there is a NULLLLL program!!!!!");
+            return null;
         }
+        System.out.println("HELLLO ARE WE INSIDE OF SELECT_INSTRUCTIONS????");
+        mips_program = new MIPSProgram();
+        System.out.println("ARE WE PASSED THIS??");
 
-        // allocate space for the parameters passed in
-        int passed_in_args = 0; // this is to allocate space to potentially save $a0-$a3 registers or less (passed in from caller)
-        int curr_params_offset = curr_local_offset;
-        for (int i = 0; i < function.parameters.length; i++) {
-            // do we need to account for parameters being arrays?????
-            if (i < 4) { // while we are still working with $a0-$a3
-                curr_params_offset-=WORD_SIZE;
-                passed_in_args+=WORD_SIZE;
-                offsets_stack.put(function.parameters[i].getName(), curr_params_offset);
-            } else { // this is we had to spill arguments in the caller
-                int offset_to_caller = (i-4)*WORD_SIZE;
-                offsets_stack.put(function.parameters[i].getName(), offset_to_caller); // this will be a positive offset from curr $fp
-            }
+        for (IRFunction function : ir_program.functions) {
+            System.out.println("\nwe are inside the LOOP\n");
+            translate_function(function);
         }
-
-        // this is to allocate the maximum amount of space needed for outgoing args, we always want at least 4 slots for $a0-$a3 in case
-        int arg_section_size = 0; // needed for outgoing arguments
-        for (IRInstruction instruc : function.instructions) {
-            if (instruc.opCode == IRInstruction.OpCode.CALL) {
-                is_leaf = 0;
-                arg_section_size = Math.max(arg_section_size, instruc.operands.length - 1); // has one less operand
-            } else if (instruc.opCode == IRInstruction.OpCode.CALLR) {
-                arg_section_size = Math.max(arg_section_size, instruc.operands.length - 2);
-                is_leaf = 0;
-            }
-        }
-        if (arg_section_size < 4) { // account for word_size here because before we just had a count of args
-            arg_section_size = 4*WORD_SIZE; // we always want at least 4 slots allocated ($a0-$a3)
-        } else {
-            max_num_args_called*=WORD_SIZE; // if we have 4 or more then we just allocate the amount we have
-        }
-
-        int total_frame_size = local_section_size + arg_section_size + passed_in_args + (2*WORD_SIZE); // 2*WORD_SIZE is for $ra and $fp (we will always allocate space for $ra here for simplicity
-        if (total_frame_size % 8 != 0) {
-            total_frame_size+=WORD_SIZE;
-        }
-
-        // we are NOT working with saved registers
-
-        /* THIS WILL BE NEEDED FOR LATER TRUST ME!!!
-
-        int args_size = 0;
-        int num_args = function.parameters.length;
-        // let's allocate space to save the incoming argument registers ($a0-$a3)
-        for (int i = 0; i < num_args && i < 4; i++) {
-            if (i < 4) {
-                args_size += WORD_SIZE;
-                //curr_offset -= WORD_SIZE;
-                offsets_stack.put(function.parameters[i].getName(), curr_offset);
-            } else { // if we are at arg 5 or more (this would have been placed on the stack by the caller)
-                // so because fp is pointing to bottom of ra, we just need to read one "frame" up the stack to access the top arguments
-                int arg_offset = 4 + (i-4)*WORD_SIZE;
-                offsets_stack.put(function.parameters[i].getName(), arg_offset);
-            }
-        }
-        */
-
-        //int total_size = local_size + args_size + (2*WORD_SIZE); // for ra and fp
-        // always allocate space for 4 args but what if more than 4 args????
-        /*
-        int max_num_args_called = 0;
-        for (IRInstruction instruc : function) {
-            if (instruc.opCode == CALL) {
-                max_num_args_called = Math.max(num_args, instruc.operands.length - 1);
-            } else if (instruc.opCode == CALLR) {
-                max_num_args_called = Math.max(num_args, instruc.operands.length - 2);
-            }
-        }
-        */
-
-        //curr_offset -= max_num_args_called*WORD_SIZE;
-        //int total_size = curr_offset/-1; // get the positive value of this
-
-        // how to account for the number of arguments?
-        /* if we have <=4 arguments, then we can just store everything on the stack,
-        if we have > 4 arguments, then we MUST spill the values onto the stack */
-
-        /* how caller-callee interact:
-            caller:
-                - before a function (THIS IS CALLED), the caller places arguments
-                    (4) into $a0-$a3
-                    --> if more than 4 arguments then the caller saves these on the stack
-            calee:
-                - in this function (before we execute anything), the callee saves these arg regs vals
-                    ont its stack */
-
-        // now I want to create the stack frame and perform calling convention
-        /* we want to do: 
-            - set the stack pointer to move "frame size" amount
-            - then place return address
-            - then place frame pointer */
-        // set new sp value (after allocating frame size amount)
-        if (total_frame_size > 0) {
-            // we want to move the stack frame pointer to the top of the newly created stack frame
-            Imm frame_size = new Imm("-" + (total_frame_size), "DEC");
-            add_regular_to_mips(MIPSOp.SUB, sp, sp, frame_size);
-            // store value in $ra into memory location at offset
-            if (!is_leaf) {
-                Imm ret_offset = new Imm("-" + (total_frame_size-4), "DEC");
-                Addr ret_location = new Addr(ret_offset, sp);
-                add_regular_to_mips(MIPSOp.SW, ra, ret_location);
-            }
-            // store value in $fp into memory location at offset
-            Imm frame_offset = new Imm("-" + (total_frame_size-8), "DEC");
-            Addr frame_location = new Addr(frame_offset, sp);
-            add_regular_to_mips(MIPSOp.SW, fp, frame_location);
-            // now lets set our frame pointer value after saving the previous frame pointer value
-            Imm offset = new Imm("" + (total_frame_size), "DEC");
-            add_regular_to_mips(MIPSOp.ADDI, null, fp, sp, total_frame_size);
-
-            if (int i = 0; i < function.parameters.length && i < 4; i++) {
-                int offset = offsets_stack.get(function.parameters[i].getName());
-                Register get_reg = new Register("$a" + i, false); // this is a real register
-                Imm imm = new Imm(("" + offset, "DEC"), fp);
-                Addr store_at = new Addr(imm);
-                add_regular_to_mips(MIPSOp.SW, null, get_reg, store_at);
-            }
-        }
-
-        for (IRInstruction instruc : function.instructions) {
-            translate_ir_to_mips(instruc, function);
-        }
-
-        // resetting the stack (rebuilding can be done in RETURN)
-
         return mips_program;
     }
 
+    public void translate_function(IRFunction function) {
+        // [Prologue code - largely unchanged from previous version]
+        // ... (Includes frame size calculation, saving $ra/$fp, setting $fp, mapping offsets) ...
+        // 1. Initialize function-specific state
+        System.out.println("HELLO I HAVE ENTERED THE FUNCTION WOOWOHOOO.");
+        offsets_stack = new HashMap<>();
+        current_is_non_leaf = false;
+        int max_num_args_called = 0;
+
+        // --- Determine Space Requirements ---
+
+        // 2a. Check if non-leaf and find max outgoing args needed
+        for (IRInstruction instruc : function.instructions) {
+             if (instruc.opCode == IRInstruction.OpCode.CALL || instruc.opCode == IRInstruction.OpCode.CALLR) {
+                current_is_non_leaf = true;
+                String func_name = "";
+                int num_ir_operands = instruc.operands.length;
+                int first_arg_index = -1;
+
+                if (instruc.opCode == IRInstruction.OpCode.CALL) {
+                    func_name = ((IRFunctionOperand) instruc.operands[0]).getName();
+                    first_arg_index = 1;
+                } else { // CALLR
+                    IROperand funcTargetOp = instruc.operands[1];
+                    if (funcTargetOp instanceof IRFunctionOperand) {
+                        func_name = ((IRFunctionOperand) funcTargetOp).getName();
+                    } // Else it's a variable, check name later if needed for intrinsics
+                    first_arg_index = 2;
+                }
+
+                if (!is_intrinsic(func_name)) { // Check only for non-intrinsics
+                     int num_args = (first_arg_index != -1) ? (num_ir_operands - first_arg_index) : 0;
+                     max_num_args_called = Math.max(max_num_args_called, num_args);
+                }
+            }
+        }
+
+        // 2b. Space for Outgoing Arguments (bottom of frame)
+        int outgoing_arg_bytes = Math.max(4, max_num_args_called) * WORD_SIZE;
+
+        // 2c. Space for Local Variables & Arrays (on stack)
+        int local_var_bytes = 0;
+        for (IRVariableOperand var : function.variables) {
+            local_var_bytes += (var.type instanceof IRArrayType) ?
+                               ((IRArrayType) var.type).getSize() * WORD_SIZE :
+                               WORD_SIZE;
+        }
+
+        // 2d. Space for saving incoming $a0-$a3 (on stack)
+        int saved_args_bytes = 0;
+         for(int i = 0; i < function.parameters.size() && i < 4; i++) {
+            saved_args_bytes += WORD_SIZE;
+        }
+
+        // 2e. Space for saving $ra and $fp (on stack)
+        int saved_ra_fp_bytes = 0;
+        boolean needs_frame = saved_args_bytes > 0 || local_var_bytes > 0 || outgoing_arg_bytes > 0 || current_is_non_leaf;
+        if (needs_frame) {
+            saved_ra_fp_bytes += WORD_SIZE; // Need space for $fp
+             if (current_is_non_leaf) {
+                saved_ra_fp_bytes += WORD_SIZE; // Also need space for $ra
+            }
+        }
+
+        // --- Calculate Total Size and Align ---
+        int preliminary_size = outgoing_arg_bytes + local_var_bytes + saved_args_bytes + saved_ra_fp_bytes;
+        current_frame_size = preliminary_size;
+        if (current_frame_size > 0 && current_frame_size % 8 != 0) {
+            current_frame_size += (8 - (current_frame_size % 8));
+        }
+
+        // --- Generate Function Prologue ---
+        add_regular_to_mips(MIPSOp.LABEL, new Addr(function.name));
+
+        if (current_frame_size > 0) {
+            // 1. Allocate frame
+            add_regular_to_mips(MIPSOp.ADDI, sp, sp, new Imm("-" + current_frame_size, "DEC")); // Use ADDI
+
+            int current_save_offset = current_frame_size; // Relative to new $sp
+
+            // 2. Save $ra (if non-leaf)
+            if (current_is_non_leaf) {
+                current_save_offset -= WORD_SIZE;
+                add_regular_to_mips(MIPSOp.SW, ra, new Addr(new Imm("" + current_save_offset, "DEC"), sp));
+                offsets_stack.put("$ra_save_slot", current_save_offset);
+            }
+
+            // 3. Save old $fp
+            current_save_offset -= WORD_SIZE;
+            add_regular_to_mips(MIPSOp.SW, fp, new Addr(new Imm("" + current_save_offset, "DEC"), sp));
+            offsets_stack.put("$fp_save_slot", current_save_offset);
+
+            // 4. Set NEW $fp
+            add_regular_to_mips(MIPSOp.ADDI, fp, sp, new Imm("" + current_save_offset, "DEC")); // Use ADDI
+
+            // --- Map Stack Slots Relative to NEW $fp ---
+            int current_offset = 0; // Base for negative offsets from $fp
+
+            // Map and Save incoming $a0-$a3
+             for (int i = 0; i < function.parameters.size() && i < 4; i++) {
+                 current_offset -= WORD_SIZE;
+                 Register arg_reg = get_arg_register(i);
+                 add_regular_to_mips(MIPSOp.SW, arg_reg, new Addr(new Imm("" + current_offset, "DEC"), fp));
+                 offsets_stack.put(function.parameters.get(i).getName(), current_offset);
+            }
+
+            // Map Local Variables & Temporaries
+            for (IRVariableOperand var : function.variables) {
+                int size = (var.type instanceof IRArrayType) ?
+                            ((IRArrayType) var.type).getSize() * WORD_SIZE :
+                            WORD_SIZE;
+                current_offset -= size;
+                offsets_stack.put(var.getName(), current_offset);
+            }
+
+            // Map Incoming Arguments 5+
+            int arg5_base_offset = (current_is_non_leaf ? 8 : 4);
+            for (int i = 4; i < function.parameters.size(); i++) {
+                int arg_fp_offset = arg5_base_offset + (i - 4) * WORD_SIZE;
+                offsets_stack.put(function.parameters.get(i).getName(), arg_fp_offset);
+            }
+        } // End if (current_frame_size > 0)
+
+        // --- Translate instructions using Naive Allocation ---
+        for (IRInstruction instruc : function.instructions) {
+             translate_ir_to_mips(instruc, function);
+        }
+    } // End translate_function
+
+
     public void translate_ir_to_mips(IRInstruction instruc, IRFunction func) {
+
+        if (instruc == null || instruc.opCode == null) return;
+
         switch(instruc.opCode) {
             case LABEL:
-                Addr addr = new Addr(((IRLabelOperand) instruc.operands[0]).getName())
-                add_regular_to_mips(MIPSOp.LABEL, addr);
+                add_regular_to_mips(MIPSOp.LABEL, new Addr(((IRLabelOperand) instruc.operands[0]).getName()));
                 break;
-            // there are two versions of assign: 2 ops AND 3 ops (array initialization)
-            case ASSIGN:
+
+            case ASSIGN: { // assign, dest, src OR assign, array, size, value
                 if (instruc.operands.length == 2) {
-                    Register dest_reg = get_virtual_register(instruc.operands[0]);
-                    if (instruc.operands[1] instanceof IRConstantOperand) {
-                        String value = ((IRConstantOperand) instruc.operands[1]).getValueString();
-                        String type;
-                        if (value.startsWith("0x")) {
-                            type = "HEX";
-                        } else {
-                            type = "DEC";
-                        }
-                        Imm imm = new Imm(value, type);
-                        add_regular_to_mips(MIPS.LI, null, dest_reg, imm);
-                    } else {
-                        Register src_reg = get_virtual_register(instruc.operands[1]);
-                        add_regular_to_mips(MIPS.LI, null, dest_reg, src_reg);
+                    // assign, destVar, src
+                    IROperand destOp = instruc.operands[0];
+                    IROperand srcOp = instruc.operands[1];
+                    // ... (rest is same as previous version) ...
+                    if (!(destOp instanceof IRVariableOperand)) {
+                        System.err.println("Error: Destination of ASSIGN must be a variable/temp.");
+                        break;
                     }
-                } else { // here we have the case where we have 3 operands ==> ARRAY INITIALIZATION
-                    // start here...
+                    String destName = ((IRVariableOperand) destOp).getName();
+                    int destOffset = offsets_stack.get(destName);
+                    load_operand_to_physical_reg(srcOp, t0); // $t0 = src
+                    add_regular_to_mips(MIPSOp.SW, t0, new Addr(new Imm("" + destOffset, "DEC"), fp)); // Mem[fp+destOffset] = $t0
+
+                } else if (instruc.operands.length == 3) {
+                    // assign, arrayName, size, value (Array Initialization)
+                    // ... (rest is mostly same as previous version, using ADD/ADDI) ...
+                     IROperand arrayOp = instruc.operands[0];
+                    IROperand sizeOp = instruc.operands[1];
+                    IROperand valueOp = instruc.operands[2];
+
+                    if (!(arrayOp instanceof IRVariableOperand) || !(sizeOp instanceof IRConstantOperand)) {
+                         System.err.println("Error: Invalid operands for 3-operand ASSIGN (array init).");
+                         break;
+                    }
+                    String arrayName = ((IRVariableOperand) arrayOp).getName();
+                    int arrayBaseOffset = offsets_stack.get(arrayName);
+                    int size = Integer.parseInt(((IRConstantOperand) sizeOp).getValueString());
+
+                    load_operand_to_physical_reg(valueOp, t0); // $t0 = value
+                    add_regular_to_mips(MIPSOp.LI, t1, new Imm("0", "DEC")); // $t1 = 0 (i=0)
+
+                    String loopLabel = get_unique_label("array_init_loop");
+                    String endLoopLabel = get_unique_label("array_init_end");
+
+                    add_regular_to_mips(MIPSOp.LABEL, new Addr(loopLabel));
+                    // Use BGE pseudo-op for check: if $t1 >= size, goto endLoopLabel
+                    // Need size in a register first ($t3)
+                    add_regular_to_mips(MIPSOp.LI, t3, new Imm(""+size, "DEC"));
+                    add_regular_to_mips(MIPSOp.BGE, new Addr(endLoopLabel), t1, t3);
+
+                    // Calculate address into $t2
+                    Register vrAddr = calculate_array_address(arrayBaseOffset, t1, t2, t3); // Uses $t1=index, result in $t2, uses $t3 as temp
+
+                    // Store value: sw $t0, 0($t2)
+                    add_regular_to_mips(MIPSOp.SW, t0, new Addr(new Imm("0", "DEC"), vrAddr));
+
+                    // Increment index: i++
+                    add_regular_to_mips(MIPSOp.ADDI, t1, t1, new Imm("1", "DEC")); // Use ADDI
+
+                    add_regular_to_mips(MIPSOp.J, new Addr(loopLabel));
+                    add_regular_to_mips(MIPSOp.LABEL, new Addr(endLoopLabel));
+
+                } else {
+                     System.err.println("Error: Unsupported number of operands for ASSIGN: " + instruc.operands.length);
                 }
                 break;
+            }
+
+
+            // --- Arithmetic Ops --- (Using ADD/SUB etc.)
             case ADD:
-                Register dest_reg = get_virtual_register(instruc.operands[0]);
-                Register source_1 = get_virtual_register(instruc.operands[1]);
-                if (instruc.operands[2] instanceof IRConstantOperand) {
-                    // then handle with Imm
-                    Imm immediate = new Imm(((IRConstantOperand) ir.operands[2]).getName(), "DEC");
-                    add_regular_to_mips(MIPSOp.ADDI, null, dest_reg, source_1, immediate);
-                } else {
-                    // create a source_2 reg
-                    Register source_2 = get_virtual_register(instruc.operands[2]);
-                    add_regular_to_mips(MIPSOp.ADD, null, dest_reg, source_1, source_2);
-                }
-                break;
             case SUB:
-                Register dest_reg = get_virtual_register(instruc.operands[0]);
-                Register source_1 = get_virtual_register(instruc.operands[1]);
-                if (instruc.operands[2] instanceof IRConstantOperand) {
-                    // then handle with Imm
-                    Imm immediate = new Imm(((IRConstantOperand) ir.operands[2]).getName(), "DEC");
-                    add_regular_to_mips(MIPSOp.SUB, null, dest_reg, source_1, immediate);
-                } else {
-                    // create a source_2 reg
-                    Register source_2 = get_virtual_register(instruc.operands[2]);
-                    add_regular_to_mips(MIPSOp.SUB, null, dest_reg, source_1, source_2);
-                }
-                break;
             case MULT:
-                Register dest_reg = get_virtual_register(instruc.operands[0]);
-                Register source_1 = get_virtual_register(instruc.operands[1]);
-                if (instruc.operands[2] instanceof IRConstantOperand) {
-                    // then handle with Imm
-                    Imm immediate = new Imm(((IRConstantOperand) ir.operands[2]).getName(), "DEC");
-                    add_regular_to_mips(MIPSOp.MUL, null, dest_reg, source_1, immediate);
-                } else {
-                    // create a source_2 reg
-                    Register source_2 = get_virtual_register(instruc.operands[2]);
-                    add_regular_to_mips(MIPSOp.MUL, null, dest_reg, source_1, source_2);
-                }
-                break;
             case DIV:
-                Register dest_reg = get_virtual_register(instruc.operands[0]);
-                Register source_1 = get_virtual_register(instruc.operands[1]);
-                if (instruc.operands[2] instanceof IRConstantOperand) {
-                    // then handle with Imm
-                    Imm immediate = new Imm(((IRConstantOperand) ir.operands[2]).getName(), "DEC");
-                    add_regular_to_mips(MIPSOp.DIV, null, dest_reg, source_1, immediate);
-                } else {
-                    // create a source_2 reg
-                    Register source_2 = get_virtual_register(instruc.operands[2]);
-                    add_regular_to_mips(MIPSOp.DIV, null, dest_reg, source_1, source_2);
-                }
-                break;
             case AND:
-                Register dest_reg = get_virtual_register(instruc.operands[0]);
-                Register source_1 = get_virtual_register(instruc.operands[1]);
-                if (instruc.operands[2] instanceof IRConstantOperand) {
-                    // then handle with Imm
-                    Imm immediate = new Imm(((IRConstantOperand) ir.operands[2]).getName(), "DEC");
-                    add_regular_to_mips(MIPSOp.ANDI, null, dest_reg, source_1, immediate);
-                } else {
-                    // create a source_2 reg
-                    Register source_2 = get_virtual_register(instruc.operands[2]);
-                    add_regular_to_mips(MIPSOp.AND, null, dest_reg, source_1, source_2);
-                }
-                break;
             case OR:
-                Register dest_reg = get_virtual_register(instruc.operands[0]);
-                Register source_1 = get_virtual_register(instruc.operands[1]);
-                if (instruc.operands[2] instanceof IRConstantOperand) {
-                    // then handle with Imm
-                    Imm immediate = new Imm(((IRConstantOperand) ir.operands[2]).getName(), "DEC");
-                    add_regular_to_mips(MIPSOp.ORI, null, dest_reg, source_1, immediate);
+            {
+                String destName = ((IRVariableOperand) instruc.operands[0]).getName();
+                int destOffset = offsets_stack.get(destName);
+                IROperand src1Op = instruc.operands[1];
+                IROperand src2Op = instruc.operands[2];
+
+                load_operand_to_physical_reg(src1Op, t0); // $t0 = src1
+                load_operand_to_physical_reg(src2Op, t1); // $t1 = src2
+
+                MIPSOp mipsOp = get_binary_op(instruc.opCode);
+                if (mipsOp != null) {
+                    boolean handled_imm = false;
+                    // Handle immediate versions explicitly
+                    if (src2Op instanceof IRConstantOperand) {
+                        Imm immOperand = new Imm(((IRConstantOperand) src2Op).getValueString(), "DEC");
+                        if (instruc.opCode == IRInstruction.OpCode.ADD) {
+                            add_regular_to_mips(MIPSOp.ADDI, t0, t0, immOperand); // Use ADDI
+                            handled_imm = true;
+                        } else if (instruc.opCode == IRInstruction.OpCode.SUB) {
+                             // Still need negation for SUB Immediate
+                             try {
+                                 int intVal = immOperand.getInt();
+                                 add_regular_to_mips(MIPSOp.ADDI, t0, t0, new Imm(String.valueOf(-intVal), "DEC")); // Use ADDI
+                                 handled_imm = true;
+                             } catch (NumberFormatException e) { /* Fall through */ }
+                        } else if (instruc.opCode == IRInstruction.OpCode.AND) {
+                            add_regular_to_mips(MIPSOp.ANDI, t0, t0, immOperand);
+                            handled_imm = true;
+                        } else if (instruc.opCode == IRInstruction.OpCode.OR) {
+                            add_regular_to_mips(MIPSOp.ORI, t0, t0, immOperand);
+                            handled_imm = true;
+                        }
+                    }
+
+                    if (!handled_imm) {
+                         // General R-type case or MUL/DIV pseudo-ops
+                         add_regular_to_mips(mipsOp, t0, t0, t1); // e.g., ADD $t0, $t0, $t1 or MUL $t0, $t0, $t1
+                         // NO MFLO needed after DIV pseudo-op
+                    }
                 } else {
-                    // create a source_2 reg
-                    Register source_2 = get_virtual_register(instruc.operands[2]);
-                    add_regular_to_mips(MIPSOp.OR, null, dest_reg, source_1, source_2);
+                     System.err.println("Error: MIPS op mapping not found for " + instruc.opCode);
+                     break;
+                }
+
+                // Store result
+                add_regular_to_mips(MIPSOp.SW, t0, new Addr(new Imm("" + destOffset, "DEC"), fp));
+                break;
+            }
+
+
+            // --- Branching --- (Mostly same, relies on pseudo-ops BLT, BGT, BGE)
+            case BREQ:
+            case BRNEQ:
+            case BRLT:
+            case BRGT:
+            case BRGEQ:
+            {
+                String label_name = ((IRLabelOperand) instruc.operands[0]).getName();
+                Addr labelAddr = new Addr(label_name);
+                IROperand op1 = instruc.operands[1];
+                IROperand op2 = instruc.operands[2];
+
+                load_operand_to_physical_reg(op1, t0); // $t0 = op1
+                load_operand_to_physical_reg(op2, t1); // $t1 = op2
+
+                MIPSOp branchOp = get_branch_op(instruc.opCode);
+                if (branchOp != null) {
+                    add_regular_to_mips(branchOp, labelAddr, t0, t1);
+                } else {
+                     System.err.println("Error: MIPS branch op mapping not found for " + instruc.opCode);
                 }
                 break;
+            }
+
             case GOTO:
-                String label_name = ((IRLabelOperand) instruc.operands[0]).getName();
-                add_regular_to_mips(MIPSOp.J, null, new Addr(label_name));
+                add_regular_to_mips(MIPSOp.J, new Addr(((IRLabelOperand) instruc.operands[0]).getName()));
                 break;
-            /* not that for all these branch instructions...
-                ==> we use gvr_for_branch because we may have immediates or variables */
-            case BREQ:
-                String label_name = ((IRLabelOperand) instruc.operands[0]).getName();
-                Addr label = new Addr(label_name);
-                Register reg_1 = gvr_for_branch(instruc.operands[1]);
-                Register reg_2 = gvr_for_branch(instruc.operands[2]);
-                add_regular_to_mips(MIPSOp.BEQ, label, reg_1, reg_2);
-                break;
-            case BRNEQ:
-                String label_name = ((IRLabelOperand) instruc.operands[0]).getName();
-                Addr label = new Addr(label_name);
-                Register reg_1 = gvr_for_branch(instruc.operands[1]);
-                Register reg_2 = gvr_for_branch(instruc.operands[2]);
-                add_regular_to_mips(MIPSOp.BNE, label, reg_1, reg_2);
-                break;
-            case BRLT:
-                String label_name = ((IRLabelOperand) instruc.operands[0]).getName();
-                Addr label = new Addr(label_name);
-                Register reg_1 = gvr_for_branch(instruc.operands[1]);
-                Register reg_2 = gvr_for_branch(instruc.operands[2]);
-                add_regular_to_mips(MIPSOp.BLT, label, reg_1, reg_2);
-                break;
-            case BRGT:
-                String label_name = ((IRLabelOperand) instruc.operands[0]).getName();
-                Addr label = new Addr(label_name);
-                Register reg_1 = gvr_for_branch(instruc.operands[1]);
-                Register reg_2 = gvr_for_branch(instruc.operands[2]);
-                add_regular_to_mips(MIPSOp.BGT, label, reg_1, reg_2);
-                break;
-            case BRGEQ:
-                String label_name = ((IRLabelOperand) instruc.operands[0]).getName();
-                Addr label = new Addr(label_name);
-                Register reg_1 = gvr_for_branch(instruc.operands[1]);
-                Register reg_2 = gvr_for_branch(instruc.operands[2]);
-                add_regular_to_mips(MIPSOp.BGE, label, reg_1, reg_2);
-                break;
-            case RETURN:
-                // there is a special case if we are in main()
 
+            case RETURN: {
+                if (instruc.operands.length > 0) {
+                    load_operand_to_physical_reg(instruc.operands[0], v0); // $v0 = return_value
+                }
+
+                // Epilogue
+                if (func.name.equals("main")) {
+                    add_regular_to_mips(MIPSOp.LI, v0, new Imm("10", "DEC"));
+                    add_regular_to_mips(MIPSOp.SYSCALL);
+                } else {
+                    if (current_frame_size > 0) {
+                        // Restore $ra
+                        if (current_is_non_leaf) {
+                            int ra_save_offset = 4; // Relative to $fp
+                            add_regular_to_mips(MIPSOp.LW, ra, new Addr(new Imm("" + ra_save_offset, "DEC"), fp));
+                        }
+                        // Restore old $fp
+                        int fp_save_offset = 0; // Relative to $fp
+                        add_regular_to_mips(MIPSOp.LW, fp, new Addr(new Imm("" + fp_save_offset, "DEC"), fp));
+                        // Deallocate frame
+                        add_regular_to_mips(MIPSOp.ADDI, sp, sp, new Imm("" + current_frame_size, "DEC")); // Use ADDI
+                    }
+                    add_regular_to_mips(MIPSOp.JR, ra); // Use JR
+                }
                 break;
+            } // End RETURN
+
             case CALL:
-            case CALLR:
-                /* when a call is made what do we want?
-                    we want calling convention !!!
-                        -  */
+            case CALLR: {
+                String func_name = "";
+                int first_arg_ir_index = -1;
+                IROperand destOp = null;
+                IROperand funcTargetOp = null;
+                boolean isCallrVar = false;
+
+                if (instruc.opCode == IRInstruction.OpCode.CALL) {
+                    funcTargetOp = instruc.operands[0];
+                    func_name = ((IRFunctionOperand) funcTargetOp).getName();
+                    first_arg_ir_index = 1;
+                } else { // CALLR
+                    destOp = instruc.operands[0];
+                    funcTargetOp = instruc.operands[1];
+                    if (funcTargetOp instanceof IRFunctionOperand) {
+                        func_name = ((IRFunctionOperand) funcTargetOp).getName();
+                    } else { // Variable target
+                        isCallrVar = true;
+                        // Use variable name for intrinsic check, actual address loaded later
+                        func_name = ((IRVariableOperand) funcTargetOp).getName();
+                    }
+                    first_arg_ir_index = 2;
+                }
+
+                if (is_intrinsic(func_name)) {
+                     handle_intrinsic_call(instruc, func_name, first_arg_ir_index, destOp);
+                } else {
+                    // Standard Function Call
+                    int num_args = instruc.operands.length - first_arg_ir_index;
+
+                    // 1. Setup arguments (same as before)
+                    for (int i = 0; i < num_args; i++) {
+                        IROperand argOp = instruc.operands[first_arg_ir_index + i];
+                        load_operand_to_physical_reg(argOp, t0); // $t0 = arg value
+                        if (i < 4) {
+                            Register dest_arg_reg = get_arg_register(i);
+                            add_regular_to_mips(MIPSOp.MOVE, dest_arg_reg, t0);
+                        } else {
+                            int outgoing_sp_offset = i * WORD_SIZE;
+                            add_regular_to_mips(MIPSOp.SW, t0, new Addr(new Imm("" + outgoing_sp_offset, "DEC"), sp));
+                        }
+                    }
+
+                    // 2. Make the call
+                    if (instruc.opCode == IRInstruction.OpCode.CALL || !isCallrVar) {
+                        // Direct call using JAL
+                        add_regular_to_mips(MIPSOp.JAL, new Addr(func_name));
+                    } else { // CALLR via variable - Use JR workaround
+                        // Load function address from variable's stack slot into $t1
+                        load_operand_to_physical_reg(funcTargetOp, t1); // $t1 = function address
+
+                        // Manually save return address
+                        String returnLabel = get_unique_label("callr_return");
+                        add_regular_to_mips(MIPSOp.LA, ra, new Addr(returnLabel)); // $ra = address of returnLabel
+
+                        // Jump using JR
+                        add_regular_to_mips(MIPSOp.JR, t1); // jr $t1
+
+                        // Define the return label immediately after
+                        add_regular_to_mips(MIPSOp.LABEL, new Addr(returnLabel));
+                    }
+
+                    // 3. Retrieve return value for CALLR
+                    if (instruc.opCode == IRInstruction.OpCode.CALLR && destOp instanceof IRVariableOperand) {
+                        String destName = ((IRVariableOperand) destOp).getName();
+                        int destOffset = offsets_stack.get(destName);
+                        add_regular_to_mips(MIPSOp.SW, v0, new Addr(new Imm("" + destOffset, "DEC"), fp)); // Store $v0 result
+                    }
+                } // End standard call
                 break;
-            case ARRAY_STORE:
+            } // End CALL/CALLR
+
+             // --- Array Operations --- (Mostly same, use ADD/ADDI)
+            case ARRAY_STORE: {
+                IROperand srcOp = instruc.operands[0];
+                IRVariableOperand arrayVar = (IRVariableOperand) instruc.operands[1];
+                IROperand indexOp = instruc.operands[2];
+
+                load_operand_to_physical_reg(srcOp, t0);   // $t0 = value to store
+                load_operand_to_physical_reg(indexOp, t1); // $t1 = index
+
+                int arrayBaseOffset = offsets_stack.get(arrayVar.getName());
+                Register vrAddr = calculate_array_address(arrayBaseOffset, t1, t2, t3); // Address in $t2
+
+                add_regular_to_mips(MIPSOp.SW, t0, new Addr(new Imm("0", "DEC"), vrAddr)); // Store value
                 break;
-            case ARRAY_LOAD:
+            }
+
+            case ARRAY_LOAD: {
+                IRVariableOperand destVar = (IRVariableOperand) instruc.operands[0];
+                IRVariableOperand arrayVar = (IRVariableOperand) instruc.operands[1];
+                IROperand indexOp = instruc.operands[2];
+
+                String destName = destVar.getName();
+                int destOffset = offsets_stack.get(destName);
+
+                load_operand_to_physical_reg(indexOp, t0); // $t0 = index
+
+                int arrayBaseOffset = offsets_stack.get(arrayVar.getName());
+                Register vrAddr = calculate_array_address(arrayBaseOffset, t0, t1, t2); // Address in $t1
+
+                add_regular_to_mips(MIPSOp.LW, t0, new Addr(new Imm("0", "DEC"), vrAddr)); // Load value into $t0
+
+                add_regular_to_mips(MIPSOp.SW, t0, new Addr(new Imm("" + destOffset, "DEC"), fp)); // Store to dest slot
                 break;
+            }
+
+            default:
+                 System.err.println("Warning: Opcode not handled: " + instruc.opCode);
+                 break;
+        } // End switch
+    } // End translate_ir_to_mips
+
+
+    // --- Helper Methods --- (Adjusted for ADD/ADDI)
+
+    // Helper to get MIPS binary operation (uses ADD, SUB now)
+    private MIPSOp get_binary_op(IRInstruction.OpCode opCode) {
+        switch (opCode) {
+            case ADD: return MIPSOp.ADD; // Use ADD (check overflow?)
+            case SUB: return MIPSOp.SUB; // Use SUB (check overflow?)
+            case MULT: return MIPSOp.MUL;
+            case DIV: return MIPSOp.DIV;
+            case AND: return MIPSOp.AND;
+            case OR: return MIPSOp.OR;
+            default: return null;
         }
     }
 
-    public Register get_virtual_register(IROperand op) {
-        if (!(op instanceof IRVariableOperand)) {
-            return null;
+    // get_branch_op remains the same
+     private MIPSOp get_branch_op(IRInstruction.OpCode opCode) {
+        switch (opCode) {
+            case BREQ: return MIPSOp.BEQ;
+            case BRNEQ: return MIPSOp.BNE;
+            case BRLT: return MIPSOp.BLT;   // Pseudo-op
+            case BRGT: return MIPSOp.BGT;   // Pseudo-op
+            case BRGEQ: return MIPSOp.BGE;  // Pseudo-op
+            default: return null;
         }
-        return new Register(((IRVariableOperand) op).getName(), true);
     }
 
-    public Register gvr_for_branch(IROperand op) {
-        // if we have variable then just create a regular register
-        if (op instanceof IRVariableOperand) {
-            return get_virtual_register(op);
-        }
-        // if constant, must create a register to hold its value
-        if (op instanceof IRConstantOperand) {
-            Register reg = new Register("v_" + (counter), true);
-            counter++;
-            String val = ((IRConstantOperand) operand).getValueString();
-            add_regular_to_mips(MIPSOp.LI, reg, new Imm(val, "DEC"));
-            return reg;
-        }
+    // get_arg_register remains the same
+    private Register get_arg_register(int index) {
+        if (index == 0) return a0;
+        if (index == 1) return a1;
+        if (index == 2) return a2;
+        if (index == 3) return a3;
         return null;
     }
 
-    public void add_regular_to_mips(MIPSOp op, String label, MIPSOperand... operands) {
-        mips_program.add_instruction(op, label, operands);
+     // is_intrinsic remains the same
+     private boolean is_intrinsic(String func_name) {
+         if (func_name == null) return false;
+         switch (func_name) {
+             case "geti": case "getc": case "puti": case "putc":
+                 return true;
+             default:
+                 return false;
+         }
+     }
+
+     // handle_intrinsic_call remains the same
+     private void handle_intrinsic_call(IRInstruction instruc, String func_name, int first_arg_ir_index, IROperand destOp) {
+         switch (func_name) {
+             case "geti": // read_int: code 5, returns in $v0
+                 add_regular_to_mips(MIPSOp.LI, v0, new Imm("5", "DEC"));
+                 add_regular_to_mips(MIPSOp.SYSCALL);
+                 if (destOp instanceof IRVariableOperand) {
+                     String destName = ((IRVariableOperand) destOp).getName();
+                     int destOffset = offsets_stack.get(destName);
+                     add_regular_to_mips(MIPSOp.SW, v0, new Addr(new Imm("" + destOffset, "DEC"), fp));
+                 }
+                 break;
+             case "getc": // read_char: code 12, result in v0 (as per SPIM syscall list A.9.1)
+                 add_regular_to_mips(MIPSOp.LI, v0, new Imm("12", "DEC"));
+                 add_regular_to_mips(MIPSOp.SYSCALL);
+                 // Result is in v0 according to Figure A.9.1, not a0
+                 if (destOp instanceof IRVariableOperand) {
+                     String destName = ((IRVariableOperand) destOp).getName();
+                     int destOffset = offsets_stack.get(destName);
+                     add_regular_to_mips(MIPSOp.SW, v0, new Addr(new Imm("" + destOffset, "DEC"), fp));
+                 }
+                 break;
+             case "puti": // print_int: code 1, arg in $a0
+                 if (instruc.operands.length > first_arg_ir_index) {
+                     load_operand_to_physical_reg(instruc.operands[first_arg_ir_index], a0);
+                     add_regular_to_mips(MIPSOp.LI, v0, new Imm("1", "DEC"));
+                     add_regular_to_mips(MIPSOp.SYSCALL);
+                 } else { System.err.println("Error: Missing argument for puti"); }
+                 break;
+             case "putc": // print_char: code 11, arg in $a0
+                 if (instruc.operands.length > first_arg_ir_index) {
+                     load_operand_to_physical_reg(instruc.operands[first_arg_ir_index], a0);
+                     add_regular_to_mips(MIPSOp.LI, v0, new Imm("11", "DEC"));
+                     add_regular_to_mips(MIPSOp.SYSCALL);
+                 } else { System.err.println("Error: Missing argument for putc"); }
+                 break;
+             default:
+                 System.err.println("Error: Intrinsic function handler not implemented for: " + func_name);
+         }
+     }
+
+    // load_operand_to_physical_reg remains the same
+    private void load_operand_to_physical_reg(IROperand op, Register targetReg) {
+        if (op instanceof IRConstantOperand) {
+            String value = ((IRConstantOperand) op).getValueString();
+            add_regular_to_mips(MIPSOp.LI, targetReg, new Imm(value, "DEC"));
+        } else if (op instanceof IRVariableOperand) {
+            String name = ((IRVariableOperand) op).getName();
+            if (!offsets_stack.containsKey(name)) {
+                 System.err.println("CRITICAL ERROR: Stack offset not found for variable: " + name + " (Operand: " + op + ")");
+                 add_regular_to_mips(MIPSOp.LI, targetReg, new Imm("0", "DEC")); // Fallback
+                 return;
+             }
+            int offset = offsets_stack.get(name);
+            add_regular_to_mips(MIPSOp.LW, targetReg, new Addr(new Imm("" + offset, "DEC"), fp));
+        } else if (op instanceof IRLabelOperand || op instanceof IRFunctionOperand) {
+             String labelName = (op instanceof IRLabelOperand) ? ((IRLabelOperand)op).getName() : ((IRFunctionOperand)op).getName();
+             add_regular_to_mips(MIPSOp.LA, targetReg, new Addr(labelName));
+        } else {
+             System.err.println("Error: Unsupported operand type in load_operand_to_physical_reg: " + op.getClass().getSimpleName());
+             add_regular_to_mips(MIPSOp.LI, targetReg, new Imm("0", "DEC")); // Fallback
+        }
     }
-}
+
+     // get_mips_operand remains the same
+     private MIPSOperand get_mips_operand(IROperand op) {
+         // ... (same as before) ...
+          if (op instanceof IRConstantOperand) {
+             return new Imm(((IRConstantOperand) op).getValueString(), "DEC");
+         } else if (op instanceof IRVariableOperand) {
+             System.err.println("Warning: get_mips_operand called for variable in naive - should load first.");
+             return null;
+         } else if (op instanceof IRLabelOperand) {
+             return new Addr(((IRLabelOperand) op).getName());
+         } else if (op instanceof IRFunctionOperand) {
+             return new Addr(((IRFunctionOperand) op).getName());
+         }
+         return null;
+     }
+
+    // calculate_array_address uses ADDI/ADD now
+    private Register calculate_array_address(int baseOffset, Register regIndex, Register regAddr, Register regTemp) {
+        // regTemp = regIndex * 4
+        add_regular_to_mips(MIPSOp.SLL, regTemp, regIndex, new Imm("2", "DEC"));
+        // regAddr = $fp + baseOffset
+        add_regular_to_mips(MIPSOp.ADDI, regAddr, fp, new Imm("" + baseOffset, "DEC")); // Use ADDI
+        // regAddr = regAddr + regTemp
+        add_regular_to_mips(MIPSOp.ADD, regAddr, regAddr, regTemp); // Use ADD
+        return regAddr;
+    }
+
+
+    // --- add_regular_to_mips overloads --- (Ensure JR overload is correct)
+    public void add_regular_to_mips(MIPSOp op, String label, MIPSOperand... operands) {
+        MIPSInstruction instruc = new MIPSInstruction(op, label, operands);
+        // Add this line for debugging:
+        System.out.println("DEBUG: Adding MIPS - ");
+        mips_program.add_instruction(new MIPSInstruction(op, label, operands));
+    }
+    public void add_regular_to_mips(MIPSOp op, MIPSOperand... operands) {
+        System.out.println("DEBUG: Adding MIPS -");
+        add_regular_to_mips(op, null, operands);
+    }
+     public void add_regular_to_mips(MIPSOp op, Addr label_addr) { // For J, JAL, LABEL, LA $ra, label
+        System.out.println("DEBUG: Adding MIPS - ");
+        if (op == MIPSOp.LABEL) {
+             add_regular_to_mips(op, label_addr.toString(), new MIPSOperand[0]);
+        } else if (op == MIPSOp.LA) { // Handle LA $ra, label case specifically if needed
+             // Assuming MIPSInstruction handles LA Reg, Addr
+             // This overload might conflict if LA needs a register arg
+             System.err.println("Warning: Addr-only overload used for LA. Ensure MIPSInstruction handles this or use LA overload.");
+             add_regular_to_mips(op, null, label_addr); // This might be wrong, depends on MIPSInstruction constructor
+        }
+        else { // J, JAL
+             add_regular_to_mips(op, null, label_addr);
+        }
+    }
+    // Overload for LA Rdest, Addr
+    public void add_regular_to_mips(MIPSOp op, Register rDest, Addr label_addr) {
+        System.out.println("DEBUG: Adding MIPS - ");
+        if (op == MIPSOp.LA) {
+            add_regular_to_mips(op, rDest, label_addr);
+        } else {
+             System.err.println("Warning: Reg, Addr overload used for non-LA op: " + op);
+        }
+    }
+
+    // Branch overload (label, r1, r2)
+    public void add_regular_to_mips(MIPSOp op, Addr label, Register r1, Register r2) {
+        System.out.println("DEBUG: Adding MIPS - ");
+        add_regular_to_mips(op, r1, r2, label);
+    }
+    // Branch overload (label, r1, imm)
+    public void add_regular_to_mips(MIPSOp op, Addr label, Register r1, Imm imm) {
+        System.out.println("DEBUG: Adding MIPS - ");
+         // Assuming MIPSInstruction handles op, r1, imm, label for pseudo-ops
+          if (op == MIPSOp.BGE) { // Extend for other immediate branches if needed
+             add_regular_to_mips(op, r1, imm, label);
+         } else {
+              System.err.println("Warning: Immediate branch format used for non-supported op: " + op);
+         }
+    }
+     // Overload for JR Rtarget
+     public void add_regular_to_mips(MIPSOp op, Register targetReg) {
+        System.out.println("DEBUG: Adding MIPS - ");
+         if (op == MIPSOp.JR) {
+             add_regular_to_mips(op, targetReg);
+         } else {
+             System.err.println("Warning: Single register overload used for non-JR op: " + op);
+         }
+     }
+     // Removed MFLO/MFHI overload as they are not available
+
+
+} // End class
