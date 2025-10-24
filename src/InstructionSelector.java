@@ -462,7 +462,6 @@ public class InstructionSelector {
             case CALL:
             case CALLR: {
                 String func_name = "";
-                int first_arg_ir_index = -1;
                 IROperand destOp = null;
                 IROperand funcTargetOp = null;
                 boolean isCallrVar = false;
@@ -470,7 +469,6 @@ public class InstructionSelector {
                 if (instruc.opCode == IRInstruction.OpCode.CALL) {
                     funcTargetOp = instruc.operands[0];
                     func_name = ((IRFunctionOperand) funcTargetOp).getName();
-                    first_arg_ir_index = 1;
                 } else {
                     destOp = instruc.operands[0];
                     funcTargetOp = instruc.operands[1];
@@ -481,18 +479,32 @@ public class InstructionSelector {
                         // Use variable name for intrinsic check, actual address loaded later
                         func_name = ((IRVariableOperand) funcTargetOp).getName();
                     }
-                    first_arg_ir_index = 2;
                 }
 
                 if (func_name.equals("geti") || func_name.equals("getc") || func_name.equals("puti") || func_name.equals("putc")) { // if this is an intrinsic call (predefined from Tiger-IR)
-                     handle_intrinsic_function(instruc, func_name, first_arg_ir_index, destOp, func);
+                    if (instruc.opCode == IRInstruction.OpCode.CALL) {
+                        handle_intrinsic_function(instruc, func_name, 1, destOp, func);
+                    } else {
+                        handle_intrinsic_function(instruc, func_name, 2, destOp, func);
+                    }
                 } else {
-                    int num_args = instruc.operands.length - first_arg_ir_index;
+                    int num_args;
+                    if (instruc.opCode == IRInstruction.OpCode.CALL) {
+                        num_args = instruc.operands.length - 1;
+                    } else {
+                        num_args = instruc.operands.length - 2;
+                    }
 
-                    // 1. Setup arguments (same as before)
+                    // argument setup on the stack
                     for (int i = 0; i < num_args; i++) {
-                        IROperand argOp = instruc.operands[first_arg_ir_index + i];
-                        load_operand_to_physical_reg(argOp, t0, func); // $t0 = arg value
+                        IROperand arg_operand;
+                        // we offset the index because of the number of operands that are present between call and callr
+                        if (instruc.opCode == IRInstruction.OpCode.CALL) {
+                            arg_operand = instruc.operands[i + 1];
+                        } else {
+                            arg_operand = instruc.operands[i + 2];
+                        }
+                        load_operand_to_physical_reg(arg_operand, t0, func); // $t0 = arg value
                         if (i < 4) {
                             Register dest_arg_reg = get_arg_register(i);
                             add_regular_to_mips(MIPSOp.MOVE, dest_arg_reg, t0);
@@ -641,18 +653,18 @@ public class InstructionSelector {
                  }
                  break;
              case "puti": // print_int: code 1, arg in $a0
-                 if (instruc.operands.length > first_arg_ir_index) {
-                     load_operand_to_physical_reg(instruc.operands[first_arg_ir_index], a0, function);
-                     add_regular_to_mips(MIPSOp.LI, v0, new Imm("1", "DEC"));
-                     add_regular_to_mips(MIPSOp.SYSCALL);
-                 } else { System.err.println("Error: Missing argument for puti"); }
-                 break;
+                if (instruc.operands.length > first_arg_ir_index) {
+                    load_operand_to_physical_reg(instruc.operands[first_arg_ir_index], a0, function);
+                    add_regular_to_mips(MIPSOp.LI, v0, new Imm("1", "DEC"));
+                    add_regular_to_mips(MIPSOp.SYSCALL);
+                }
+                break;
              case "putc": // print_char: code 11, arg in $a0
                  if (instruc.operands.length > first_arg_ir_index) {
                      load_operand_to_physical_reg(instruc.operands[first_arg_ir_index], a0, function);
                      add_regular_to_mips(MIPSOp.LI, v0, new Imm("11", "DEC"));
                      add_regular_to_mips(MIPSOp.SYSCALL);
-                 } else { System.err.println("Error: Missing argument for putc"); }
+                 }
                  break;
          }
      }
@@ -665,18 +677,20 @@ public class InstructionSelector {
 
         } else if (op instanceof IRVariableOperand) {
             IRVariableOperand var = (IRVariableOperand) op;
-            String name = var.getName();
-            
-            if (!offsets_stack.containsKey(name)) {
-                 System.err.println("CRITICAL ERROR: Stack offset not found for variable: " + name + " (Func: " + func.name + ")");
-                 add_regular_to_mips(MIPSOp.LI, target_reg, new Imm("0", "DEC")); // Fallback
-                 return;
-             }
-            int offset = offsets_stack.get(name);
+            String var_name = var.getName();
+
+            int offset = offsets_stack.get(var_name);
 
             if (var.type instanceof IRArrayType) {
-                // --- THIS IS THE CRITICAL FIX ---
-                if (isParameter(func, name)) {
+
+                boolean is_param = false;
+                for (IRVariableOperand param : func.parameters) {
+                    if (param.getName().equals(var_name)) {
+                        is_param = true;
+                    }
+                }
+
+                if (is_param) {
                     // It's an array PARAMETER.
                     // Load its VALUE (which is the base address).
                     add_regular_to_mips(MIPSOp.LW, target_reg, new Addr(new Imm("" + offset, "DEC"), fp));
@@ -701,89 +715,46 @@ public class InstructionSelector {
         }
     }
 
+    // this is how to calculate the address of the array
+    private Register calculate_array_address(int base_offset, Register index_reg, Register addr_reg, Register temp_reg) {
+        add_regular_to_mips(MIPSOp.SLL, temp_reg, index_reg, new Imm("2", "DEC")); // ~multiple by size of each element (4 bytes)
+        add_regular_to_mips(MIPSOp.ADDI, addr_reg, fp, new Imm("" + base_offset, "DEC")); // find location with offset from the $fp of stack
 
+        add_regular_to_mips(MIPSOp.ADD, addr_reg, addr_reg, temp_reg); // WHAT DOES THIS DOO????????????????/
 
-                    ////// WORKKKKKKK ON THIIIIIIIIIIISSSSSSSSSSSSSSSSSSSSSSSSSSS ////////////////////////////
-    private boolean isParameter(IRFunction func, String varName) {
-        for (IRVariableOperand param : func.parameters) {
-            if (param.getName().equals(varName)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-
-
-    // calculate_array_address uses ADDI/ADD now
-    private Register calculate_array_address(int baseOffset, Register regIndex, Register regAddr, Register regTemp) {
-        // regTemp = regIndex * 4
-        add_regular_to_mips(MIPSOp.SLL, regTemp, regIndex, new Imm("2", "DEC"));
-        // regAddr = $fp + baseOffset
-        add_regular_to_mips(MIPSOp.ADDI, regAddr, fp, new Imm("" + baseOffset, "DEC")); // Use ADDI
-        // regAddr = regAddr + regTemp
-        add_regular_to_mips(MIPSOp.ADD, regAddr, regAddr, regTemp); // Use ADD
-        return regAddr;
+        return addr_reg;
     }
 
 
     // --- add_regular_to_mips overloads --- (Ensure JR overload is correct)
+    // this is going to be the main add_regular_to_mips which all other functions call
     public void add_regular_to_mips(MIPSOp op, String label, MIPSOperand... operands) {
         MIPSInstruction instruc = new MIPSInstruction(op, label, operands);
-        // Add this line for debugging:
-        System.out.println("DEBUG: Adding MIPS - " + instruc.toString());
-        mips_program.add_instruction(new MIPSInstruction(op, label, operands));
+        mips_program.add_instruction(instruc);
     }
     public void add_regular_to_mips(MIPSOp op, MIPSOperand... operands) {
         //System.out.println("DEBUG: Adding MIPS -");
         add_regular_to_mips(op, null, operands);
     }
-     public void add_regular_to_mips(MIPSOp op, Addr label_addr) { // For J, JAL, LABEL, LA $ra, label
-        //System.out.println("DEBUG: Adding MIPS - ");
+     public void add_regular_to_mips(MIPSOp op, Addr label_addr) { // For J, JAL, LABEL
         if (op == MIPSOp.LABEL) {
              add_regular_to_mips(op, label_addr.toString(), new MIPSOperand[0]);
-        } else if (op == MIPSOp.LA) { // Handle LA $ra, label case specifically if needed
-             // Assuming MIPSInstruction handles LA Reg, Addr
-             // This overload might conflict if LA needs a register arg
-             System.err.println("Warning: Addr-only overload used for LA. Ensure MIPSInstruction handles this or use LA overload.");
-             add_regular_to_mips(op, null, label_addr); // This might be wrong, depends on MIPSInstruction constructor
-        }
-        else { // J, JAL
+        } else { // J, JAL
             add_regular_to_mips(op, (MIPSOperand)label_addr);
         }
     }
-    // Overload for LA Rdest, Addr
+    // used for the one LA instruction
     public void add_regular_to_mips(MIPSOp op, Register rDest, Addr label_addr) {
-        //System.out.println("DEBUG: Adding MIPS - ");
         add_regular_to_mips(op, (MIPSOperand)rDest, (MIPSOperand)label_addr);
     }
 
     // Branch overload (label, r1, r2)
     public void add_regular_to_mips(MIPSOp op, Addr label, Register r1, Register r2) {
-        //System.out.println("DEBUG: Adding MIPS - ");
         add_regular_to_mips(op, r1, r2, label);
     }
-    // Branch overload (label, r1, imm)
-    public void add_regular_to_mips(MIPSOp op, Addr label, Register r1, Imm imm) {
-        //System.out.println("DEBUG: Adding MIPS - ");
-         // Assuming MIPSInstruction handles op, r1, imm, label for pseudo-ops
-          if (op == MIPSOp.BGE) { // Extend for other immediate branches if needed
-             add_regular_to_mips(op, r1, imm, label);
-         } else {
-              System.err.println("Warning: Immediate branch format used for non-supported op: " + op);
-         }
+
+    // tihs is used for JR instruction
+    public void add_regular_to_mips(MIPSOp op, Register targetReg) {
+        add_regular_to_mips(op, (MIPSOperand) targetReg);
     }
-     // Overload for JR Rtarget
-     public void add_regular_to_mips(MIPSOp op, Register targetReg) {
-        //System.out.println("DEBUG: Adding MIPS - ");
-         if (op == MIPSOp.JR) {
-             add_regular_to_mips(op, (MIPSOperand) targetReg);
-         } else {
-             System.err.println("Warning: Single register overload used for non-JR op: " + op);
-             add_regular_to_mips(op, (MIPSOperand) targetReg);
-         }
-     }
-     // Removed MFLO/MFHI overload as they are not available
-
-
-} // End class
+}
