@@ -266,11 +266,14 @@ public class IRReader {
                 throw new IRException("Invalid main function", signatureLine.lineNumber);
         }
 
-        // everything is being treated like a local variable
-        List<IRVariableOperand> localVariables = new ArrayList<>(variableMap.values());
-        localVariables.removeAll(params);
+        // found that local variables and parameters were being added to local vars list
+            //==> allocating space more than needed --> offsets incorrect
+            // cleanup the localvars list here 
+        List<IRVariableOperand> local_variables = new ArrayList<>(variableMap.values());
+        local_variables.removeAll(params);
         
-        return new IRFunction(functionName, retType, params, localVariables, instructions);
+        return new IRFunction(functionName, retType, params, local_variables, instructions);
+        
     }
 
     private Pattern arrayPattern = Pattern.compile("^(.+)\\[(\\d+)\\]$");

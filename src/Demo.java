@@ -61,8 +61,8 @@ public class Demo {
         InstructionSelector instruc_selector = new InstructionSelector();
         MIPSProgram mips_program = instruc_selector.select_instructions(program);
 
-
-        System.out.println("This is the length of instruction_list for MIPS program: " + mips_program.instruction_list.size());
+        // let's see if we even have any instructions because it isn't working
+        System.out.println("this is the length of instruction_list for MIPS program: " + mips_program.instruction_list.size());
         for (MIPSInstruction instruc : mips_program.instruction_list) {
             System.out.println(instruc.toString());
         }
